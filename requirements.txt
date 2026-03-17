@@ -1,0 +1,6 @@
+flask
+smartapi-python
+pyotp
+pandas
+websocket-client
+logzero

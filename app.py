@@ -21,7 +21,7 @@ API_KEY     = os.environ.get("API_KEY",     "your_api_key")
 CLIENT_CODE = os.environ.get("CLIENT_CODE", "your_client_code")
 PASSWORD    = os.environ.get("PASSWORD",    "your_mpin")
 TOTP_TOKEN  = os.environ.get("TOTP_TOKEN",  "your_totp_secret")
-SECRET_KEY  = os.environ.get("SECRET_KEY",  "your_secret_key")
+ 
 
 # ═══════════════════════════════════════
 #   SETTINGS
@@ -65,7 +65,7 @@ def add_log(msg, type="info"):
 # ═══════════════════════════════════════
 def connect_angel():
     try:
-        obj  = SmartConnect(api_key=API_KEY, secret_key=SECRET_KEY)
+        obj  = SmartConnect(api_key=API_KEY)
         totp = pyotp.TOTP(TOTP_TOKEN).now()
         data = obj.generateSession(CLIENT_CODE, PASSWORD, totp)
         if not data["status"]:

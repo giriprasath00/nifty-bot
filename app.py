@@ -57,24 +57,27 @@ def add_log(msg, level="info"):
 def connect_angel():
     for attempt in range(1, 6):
         try:
-            obj = SmartConnect(api_key=API_KEY.strip())
-            totp = pyotp.TOTP(TOTP_TOKEN.strip()).now()  # Fresh TOTP inside the loop
+            obj = SmartConnect(api_key=API_KEY)
             
-            data = obj.generateSession(CLIENT_CODE.strip(), PASSWORD.strip(), totp)
+            # --- THE MAGIC FIX IS THESE TWO LINES ---
+            clean_secret = TOTP_TOKEN.replace(" ", "").replace("-", "").replace('"', "").replace("'", "").upper()
+            totp = pyotp.TOTP(clean_secret).now()
+            # ----------------------------------------
+            
+            data = obj.generateSession(CLIENT_CODE, PASSWORD, totp)
             
             if not data.get("status"):
                 raise Exception(f"Login failed: {data.get('message', 'unknown')}")
             
             state["connected"] = True
             add_log("Connected to Angel One SmartAPI ✓", "success")
-            return obj # Make sure to return the object on success!
+            return obj
             
         except Exception as e:
             add_log(f"Login attempt {attempt}/5 failed: {e}", "error")
-            time.sleep(35) # Offset sleep to avoid TOTP boundaries
+            time.sleep(35)
             
-    return None # Return None if all 5 attempts fail
-
+    return None
 # ═══════════════════════════════════════
 #   GET NIFTY CANDLE DATA
 # ═══════════════════════════════════════

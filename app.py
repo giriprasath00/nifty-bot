@@ -6,12 +6,18 @@ from datetime import datetime, timedelta
 app = Flask(__name__)
 
 # ═══════════════════════════════════════
-#   CREDENTIALS (set in Railway Variables)
+#   CREDENTIALS 
 # ═══════════════════════════════════════
 API_KEY     = os.environ.get("API_KEY",     "").strip()
 CLIENT_CODE = os.environ.get("CLIENT_CODE", "").strip()
 PASSWORD    = os.environ.get("PASSWORD",    "").strip()
-TOTP_TOKEN  = os.environ.get("TOTP_TOKEN",  "").strip()
+
+# Comment out the old one
+# TOTP_TOKEN  = os.environ.get("TOTP_TOKEN",  "").strip()
+
+# Hardcode the key for testing (Make sure these are capital "O"s, not zeros!)
+TOTP_TOKEN  = "7UPZYYCOPFWPRUVTPKMLQOZBNQ"
+
 
 # ═══════════════════════════════════════
 #   SETTINGS

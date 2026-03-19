@@ -1,428 +1,580 @@
-
 from flask import Flask, jsonify, render_template_string
 from SmartApi import SmartConnect
-import pyotp, pandas as pd, threading, time, os, base64, hashlib
+import pyotp, pandas as pd, threading, time, os
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-API_KEY     = os.environ.get("API_KEY",     "").strip()
-CLIENT_CODE = os.environ.get("CLIENT_CODE", "").strip()
-PASSWORD    = os.environ.get("PASSWORD",    "").strip()
-TOTP_TOKEN  = os.environ.get("TOTP_TOKEN",  "").strip()
+# ═══════════════════════════════════════
+#   CREDENTIALS (set in Railway Variables)
+# ═══════════════════════════════════════
+API_KEY     = os.environ.get("API_KEY",     "")
+CLIENT_CODE = os.environ.get("CLIENT_CODE", "")
+PASSWORD    = os.environ.get("PASSWORD",    "")
+TOTP_TOKEN  = os.environ.get("TOTP_TOKEN",  "")
 
-CAPITAL       = 1000000
-LOT_SIZE      = 25
-STRIKE_OFFSET = 100
-NIFTY_TOKEN   = "99926000"
-NIFTY_EXCH    = "NSE"
+# ═══════════════════════════════════════
+#   SETTINGS
+# ═══════════════════════════════════════
+CAPITAL     = 1000000   # ₹10 Lakh paper capital
+LOT_SIZE    = 25        # NIFTY 1 lot = 25 units
+STOP_LOSS   = -2000     # exit if loss > ₹2000
+TARGET      = 4000      # exit if profit > ₹4000
+NIFTY_TOKEN = "99926000"
+NIFTY_EXCH  = "NSE"
 
+# ═══════════════════════════════════════
+#   SHARED STATE
+# ═══════════════════════════════════════
 state = {
     "connected"   : False,
-    "nifty_price" : 0,
+    "nifty_price" : 0.0,
     "signal"      : "WAITING",
-    "reason"      : "Connecting to Angel One...",
-    "balance"     : CAPITAL,
-    "total_pnl"   : 0,
+    "reason"      : "Starting up...",
+    "balance"     : float(CAPITAL),
+    "total_pnl"   : 0.0,
     "wins"        : 0,
     "losses"      : 0,
     "position"    : None,
     "trades"      : [],
     "last_update" : "—",
-    "strategy"    : {"ema": "—", "sr": "—", "volume": "—", "buy_votes": 0, "sell_votes": 0},
+    "market_open" : False,
     "log"         : [],
+    "ema9"        : 0.0,
+    "ema21"       : 0.0,
 }
 
-def add_log(msg, type="info"):
-    state["log"].insert(0, {"msg": msg, "type": type, "time": datetime.now().strftime("%H:%M:%S")})
-    state["log"] = state["log"][:50]
+def add_log(msg, level="info"):
+    t = datetime.now().strftime("%H:%M:%S")
+    entry = {"msg": msg, "level": level, "time": t}
+    state["log"].insert(0, entry)
+    state["log"] = state["log"][:60]
+    print(f"[{t}] {msg}")
 
-def get_totp_code(secret):
-    # Method 1: direct
-    try:
-        return pyotp.TOTP(secret).now()
-    except Exception:
-        pass
-    # Method 2: uppercase + strip
-    try:
-        return pyotp.TOTP(secret.upper().strip()).now()
-    except Exception:
-        pass
-    # Method 3: pad to multiple of 8
-    try:
-        padded = secret + "=" * (-len(secret) % 8)
-        return pyotp.TOTP(padded).now()
-    except Exception:
-        pass
-    # Method 4: base64 decode then base32 encode
-    try:
-        decoded = base64.b64decode(secret + "==")
-        b32 = base64.b32encode(decoded).decode()
-        return pyotp.TOTP(b32).now()
-    except Exception:
-        pass
-    # Method 5: encode string as bytes then base32
-    try:
-        b32 = base64.b32encode(secret.encode()).decode()
-        return pyotp.TOTP(b32).now()
-    except Exception as e:
-        raise Exception(f"All TOTP methods failed: {e}")
-
+# ═══════════════════════════════════════
+#   CONNECT ANGEL ONE (with retry)
+# ═══════════════════════════════════════
 def connect_angel():
-    try:
-        obj  = SmartConnect(api_key=API_KEY)
-        totp = get_totp_code(TOTP_TOKEN)
-        print(f"TOTP: {totp} | CLIENT: {CLIENT_CODE}")
-        data = obj.generateSession(CLIENT_CODE, PASSWORD, totp)
-        print(f"Response: {data}")
-        if not data["status"]:
-            add_log(f"Login failed: {data['message']}", "error")
-            return None
-        state["connected"] = True
-        add_log("Connected to Angel One SmartAPI ✓", "success")
-        return obj
-    except Exception as e:
-        import traceback
-        print(traceback.format_exc())
-        add_log(f"Connection error: {e}", "error")
-        return None
+    for attempt in range(1, 6):
+        try:
+            obj  = SmartConnect(api_key=API_KEY.strip())
+            totp = pyotp.TOTP(TOTP_TOKEN.strip()).now()
+            data = obj.generateSession(CLIENT_CODE.strip(), PASSWORD.strip(), totp)
+            if not data.get("status"):
+                raise Exception(f"Login failed: {data.get('message', 'unknown')}")
+            state["connected"] = True
+            add_log("Connected to Angel One SmartAPI ✓", "success")
+            return obj
+        except Exception as e:
+            add_log(f"Login attempt {attempt}/5 failed: {e}", "error")
+            time.sleep(15)
+    return None
 
+# ═══════════════════════════════════════
+#   GET NIFTY CANDLE DATA
+# ═══════════════════════════════════════
 def get_candle_data(obj):
-    try:
-        now = datetime.now()
-        params = {
-            "exchange"    : NIFTY_EXCH,
-            "symboltoken" : NIFTY_TOKEN,
-            "interval"    : "FIVE_MINUTE",
-            "fromdate"    : (now - timedelta(days=5)).strftime("%Y-%m-%d %H:%M"),
-            "todate"      : now.strftime("%Y-%m-%d %H:%M"),
-        }
-        data = obj.getCandleData(params)
-        if not data["status"]:
-            add_log(f"Data error: {data['message']}", "error")
-            return None
-        df = pd.DataFrame(data["data"], columns=["timestamp","open","high","low","close","volume"])
-        for col in ["close","volume","high","low"]:
-            df[col] = df[col].astype(float)
-        return df
-    except Exception as e:
-        add_log(f"Candle error: {e}", "error")
-        return None
+    now = datetime.now()
+    params = {
+        "exchange"    : NIFTY_EXCH,
+        "symboltoken" : NIFTY_TOKEN,
+        "interval"    : "FIVE_MINUTE",
+        "fromdate"    : (now - timedelta(days=5)).strftime("%Y-%m-%d %H:%M"),
+        "todate"      : now.strftime("%Y-%m-%d %H:%M"),
+    }
+    data = obj.getCandleData(params)
+    if not data.get("status"):
+        raise Exception(f"Candle data error: {data.get('message')}")
+    df = pd.DataFrame(data["data"],
+        columns=["timestamp","open","high","low","close","volume"])
+    df["close"]  = df["close"].astype(float)
+    df["high"]   = df["high"].astype(float)
+    df["low"]    = df["low"].astype(float)
+    df["volume"] = df["volume"].astype(float)
+    return df
 
-def calc_ema(df):
+# ═══════════════════════════════════════
+#   STRATEGY: EMA CROSSOVER + RSI
+# ═══════════════════════════════════════
+def get_signal(df):
     df["ema9"]  = df["close"].ewm(span=9,  adjust=False).mean()
     df["ema21"] = df["close"].ewm(span=21, adjust=False).mean()
-    last, prev  = df.iloc[-1], df.iloc[-2]
-    if prev["ema9"] <= prev["ema21"] and last["ema9"] > last["ema21"]:
-        return "BUY",  "EMA9 crossed above EMA21 ↑"
-    if prev["ema9"] >= prev["ema21"] and last["ema9"] < last["ema21"]:
-        return "SELL", "EMA9 crossed below EMA21 ↓"
-    if last["ema9"] > last["ema21"]:
-        return "BUY_TREND",  f"EMA9({last['ema9']:.0f}) > EMA21({last['ema21']:.0f})"
-    return "SELL_TREND", f"EMA9({last['ema9']:.0f}) < EMA21({last['ema21']:.0f})"
+    delta = df["close"].diff()
+    gain  = delta.clip(lower=0).rolling(14).mean()
+    loss  = (-delta.clip(upper=0)).rolling(14).mean()
+    df["rsi"] = 100 - (100 / (1 + gain / loss))
 
-def calc_sr(df):
-    recent     = df.tail(20)
-    resistance = recent["high"].max()
-    support    = recent["low"].min()
-    price      = df["close"].iloc[-1]
-    prev_price = df["close"].iloc[-2]
-    buffer     = (resistance - support) * 0.02
-    if prev_price < resistance and price >= resistance - buffer:
-        return "SELL", f"Near Resistance ₹{resistance:.0f}"
-    if prev_price > support and price <= support + buffer:
-        return "BUY",  f"Near Support ₹{support:.0f}"
-    return "NEUTRAL", f"S:₹{support:.0f}  R:₹{resistance:.0f}"
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
 
-def calc_volume(df):
-    df["vol_avg"] = df["volume"].rolling(10).mean()
-    last, prev    = df.iloc[-1], df.iloc[-2]
-    high_vol      = last["volume"] > last["vol_avg"] * 1.5
-    ratio         = last["volume"] / last["vol_avg"] if last["vol_avg"] > 0 else 1
-    if high_vol and last["close"] > prev["close"]:
-        return "BUY",  f"Volume surge ↑ ({ratio:.1f}x avg)"
-    if high_vol and last["close"] < prev["close"]:
-        return "SELL", f"Volume surge ↓ ({ratio:.1f}x avg)"
-    return "NEUTRAL", f"Normal volume ({ratio:.1f}x avg)"
+    state["ema9"]  = round(float(last["ema9"]),  2)
+    state["ema21"] = round(float(last["ema21"]), 2)
+    rsi = round(float(last["rsi"]), 1)
 
-def get_signal(df):
-    if df is None or len(df) < 25:
-        return "HOLD", "Not enough data", {}
-    ema_s, ema_r = calc_ema(df)
-    sr_s,  sr_r  = calc_sr(df)
-    vol_s, vol_r = calc_volume(df)
-    buy_v  = sum(1 for s in [ema_s, sr_s, vol_s] if "BUY"  in s)
-    sell_v = sum(1 for s in [ema_s, sr_s, vol_s] if "SELL" in s)
-    details = {
-        "ema": f"{ema_s} — {ema_r}", "sr": f"{sr_s} — {sr_r}",
-        "volume": f"{vol_s} — {vol_r}", "buy_votes": buy_v,
-        "sell_votes": sell_v, "price": float(df["close"].iloc[-1]),
-    }
-    if buy_v  >= 2: return "BUY",  f"{buy_v}/3 strategies say BUY",  details
-    if sell_v >= 2: return "SELL", f"{sell_v}/3 strategies say SELL", details
-    return "HOLD", "No clear consensus", details
+    fresh_bull = prev["ema9"] <= prev["ema21"] and last["ema9"] > last["ema21"]
+    fresh_bear = prev["ema9"] >= prev["ema21"] and last["ema9"] < last["ema21"]
+    bull_trend = last["ema9"] > last["ema21"] and 40 < rsi < 68
+    bear_trend = last["ema9"] < last["ema21"] and rsi > 32
 
-def get_option_price(nifty, otype, strike):
-    intrinsic = max(0, nifty - strike) if otype == "CE" else max(0, strike - nifty)
-    return round(intrinsic + 75, 2)
+    if fresh_bull and bull_trend:
+        return "BUY",  f"EMA crossover ↑ | RSI {rsi}"
+    if fresh_bear and bear_trend:
+        return "SELL", f"EMA crossover ↓ | RSI {rsi}"
+    if bull_trend:
+        return "BUY",  f"EMA bullish trend | RSI {rsi}"
+    if bear_trend:
+        return "SELL", f"EMA bearish trend | RSI {rsi}"
+    return "HOLD", f"No clear signal | RSI {rsi}"
 
-def open_trade(signal, price, reason):
+# ═══════════════════════════════════════
+#   GET OPTION SYMBOL (NSE F&O)
+# ═══════════════════════════════════════
+def get_option_symbol(price, signal):
+    strike = round(price / 50) * 50
     otype  = "CE" if signal == "BUY" else "PE"
-    strike = round(price / 100) * 100 + (STRIKE_OFFSET if signal == "BUY" else -STRIKE_OFFSET)
-    oprice = get_option_price(price, otype, strike)
-    cost   = oprice * LOT_SIZE
-    if cost > state["balance"]:
-        add_log("Insufficient balance!", "error")
-        return
-    state["balance"] -= cost
-    state["position"] = {
-        "type": otype, "strike": strike, "entry_price": oprice,
-        "entry_nifty": price, "cost": cost, "reason": reason,
-        "entry_time": datetime.now().strftime("%H:%M:%S"),
-    }
-    add_log(f"{'BUY' if signal=='BUY' else 'SELL'} NIFTY {strike} {otype} @ ₹{oprice} | Cost ₹{cost:,.0f}", "buy" if signal=="BUY" else "sell")
+    expiry = get_nearest_expiry()
+    return f"NIFTY{expiry}{strike}{otype}"
 
-def close_trade(price, reason):
-    pos   = state["position"]
-    exitp = get_option_price(price, pos["type"], pos["strike"])
-    pnl   = (exitp * LOT_SIZE) - pos["cost"]
-    state["balance"]   += exitp * LOT_SIZE
+def get_nearest_expiry():
+    today = datetime.now()
+    days_ahead = 3 - today.weekday()
+    if days_ahead <= 0:
+        days_ahead += 7
+    expiry = today + timedelta(days=days_ahead)
+    return expiry.strftime("%d%b").upper()[:-2] + expiry.strftime("%b").upper()[:3]
+
+def get_option_ltp(obj, symbol):
+    try:
+        data = obj.ltpData("NFO", symbol, "")
+        if data.get("status") and data.get("data"):
+            return float(data["data"]["ltp"])
+    except Exception as e:
+        add_log(f"LTP fetch error ({symbol}): {e}", "error")
+    return None
+
+# ═══════════════════════════════════════
+#   OPEN PAPER TRADE
+# ═══════════════════════════════════════
+def open_trade(obj, signal, price, reason):
+    symbol = get_option_symbol(price, signal)
+    ltp    = get_option_ltp(obj, symbol)
+
+    if ltp is None:
+        add_log(f"Could not fetch LTP for {symbol}", "error")
+        return
+
+    cost = ltp * LOT_SIZE
+    if cost > state["balance"]:
+        add_log("Insufficient balance to open trade", "error")
+        return
+
+    state["balance"]  -= cost
+    state["position"]  = {
+        "symbol"      : symbol,
+        "type"        : "CE" if signal == "BUY" else "PE",
+        "signal"      : signal,
+        "entry_price" : ltp,
+        "entry_nifty" : price,
+        "cost"        : cost,
+        "reason"      : reason,
+        "entry_time"  : datetime.now().strftime("%H:%M:%S"),
+    }
+    add_log(f"{'BUY' if signal=='BUY' else 'SELL'} {symbol} @ ₹{ltp:.2f} | Cost ₹{cost:,.0f}", "buy" if signal=="BUY" else "sell")
+
+# ═══════════════════════════════════════
+#   CLOSE PAPER TRADE
+# ═══════════════════════════════════════
+def close_trade(obj, reason="Signal"):
+    pos = state["position"]
+    ltp = get_option_ltp(obj, pos["symbol"])
+
+    if ltp is None:
+        add_log("Could not fetch LTP to close trade", "error")
+        return
+
+    pnl = (ltp - pos["entry_price"]) * LOT_SIZE
+    state["balance"]   += ltp * LOT_SIZE
     state["total_pnl"] += pnl
     state["position"]   = None
+
     if pnl >= 0: state["wins"]   += 1
     else:        state["losses"] += 1
-    state["trades"].insert(0, {
-        "option": f"NIFTY {pos['strike']} {pos['type']}",
-        "entry": pos["entry_price"], "exit": exitp, "pnl": round(pnl, 2),
-        "entry_time": pos["entry_time"], "exit_time": datetime.now().strftime("%H:%M:%S"),
-    })
-    add_log(f"EXIT NIFTY {pos['strike']} {pos['type']} @ ₹{exitp} | P&L {'+' if pnl>=0 else ''}₹{pnl:,.0f}", "profit" if pnl>=0 else "loss")
 
+    state["trades"].insert(0, {
+        "symbol"     : pos["symbol"],
+        "entry"      : pos["entry_price"],
+        "exit"       : ltp,
+        "pnl"        : round(pnl, 2),
+        "entry_time" : pos["entry_time"],
+        "exit_time"  : datetime.now().strftime("%H:%M:%S"),
+        "reason"     : reason,
+    })
+    add_log(f"EXIT {pos['symbol']} @ ₹{ltp:.2f} | P&L {'+' if pnl>=0 else ''}₹{pnl:,.0f} ({reason})", "profit" if pnl>=0 else "loss")
+
+# ═══════════════════════════════════════
+#   MAIN BOT LOOP
+# ═══════════════════════════════════════
 def bot_loop():
+    add_log("NSEAlgo bot starting...", "info")
     obj = None
+
     while obj is None:
         obj = connect_angel()
         if obj is None:
+            add_log("Retrying connection in 30s...", "error")
             time.sleep(30)
-    add_log("Bot started — watching NIFTY every 5 mins", "info")
+
+    add_log("Bot active — checking every 5 mins during market hours", "info")
+
     while True:
-        now          = datetime.now()
-        market_open  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
-        market_close = now.replace(hour=15, minute=20, second=0, microsecond=0)
-        if not (market_open <= now <= market_close):
-            if state["position"] and now > market_close:
-                df = get_candle_data(obj)
-                if df is not None:
-                    close_trade(float(df["close"].iloc[-1]), "Market Close")
-            state["signal"]      = "MARKET CLOSED"
-            state["reason"]      = "Opens Mon–Fri 9:15 AM IST"
+        try:
+            now          = datetime.now()
+            market_open  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
+            market_close = now.replace(hour=15, minute=20, second=0, microsecond=0)
+            is_weekend   = now.weekday() >= 5
+
+            # ── outside market hours ──────────────────
+            if is_weekend or not (market_open <= now <= market_close):
+                # auto close any open position at day end
+                if state["position"] and now > market_close and not is_weekend:
+                    close_trade(obj, "Market Close")
+
+                state["market_open"]  = False
+                state["signal"]       = "MARKET CLOSED"
+                state["reason"]       = "Mon–Fri 9:15 AM – 3:20 PM IST"
+                state["last_update"]  = now.strftime("%H:%M:%S")
+                time.sleep(60)
+                continue
+
+            state["market_open"] = True
+
+            # ── fetch data & signal ───────────────────
+            df     = get_candle_data(obj)
+            signal, reason = get_signal(df)
+            price  = float(df["close"].iloc[-1])
+
+            state["nifty_price"] = round(price, 2)
+            state["signal"]      = signal
+            state["reason"]      = reason
             state["last_update"] = now.strftime("%H:%M:%S")
-            time.sleep(60)
-            continue
-        df = get_candle_data(obj)
-        signal, reason, details = get_signal(df)
-        price = details.get("price", 0)
-        if price > 0:
-            state.update({"nifty_price": price, "signal": signal, "reason": reason,
-                          "strategy": details, "last_update": now.strftime("%H:%M:%S")})
+
             pos = state["position"]
+
+            # ── no position → open one ────────────────
             if pos is None:
                 if signal in ("BUY", "SELL"):
-                    open_trade(signal, price, reason)
-            else:
-                if (pos["type"] == "CE" and signal == "SELL") or (pos["type"] == "PE" and signal == "BUY"):
-                    close_trade(price, reason)
-        time.sleep(300)
+                    open_trade(obj, signal, price, reason)
 
+            # ── in position → check SL/target/flip ───
+            else:
+                ltp = get_option_ltp(obj, pos["symbol"])
+                if ltp:
+                    unrealized = (ltp - pos["entry_price"]) * LOT_SIZE
+
+                    if unrealized <= STOP_LOSS:
+                        add_log(f"Stop loss hit! Unrealized: ₹{unrealized:,.0f}", "loss")
+                        close_trade(obj, "Stop Loss")
+                    elif unrealized >= TARGET:
+                        add_log(f"Target hit! Unrealized: ₹{unrealized:,.0f}", "profit")
+                        close_trade(obj, "Target")
+                    elif (pos["type"] == "CE" and signal == "SELL") or \
+                         (pos["type"] == "PE" and signal == "BUY"):
+                        close_trade(obj, f"Signal flip → {signal}")
+
+        except Exception as e:
+            add_log(f"Bot error: {e}", "error")
+            try:
+                obj = connect_angel() or obj
+            except:
+                pass
+
+        # ── wait for next 5-min candle ────────────────
+        sleep_secs = 300 - (time.time() % 300)
+        time.sleep(sleep_secs)
+
+# ═══════════════════════════════════════
+#   API ENDPOINT
+# ═══════════════════════════════════════
 @app.route("/api/state")
 def api_state():
-    pos     = state["position"]
-    unreal  = 0
-    if pos:
-        cp     = get_option_price(state["nifty_price"], pos["type"], pos["strike"])
-        unreal = round((cp - pos["entry_price"]) * LOT_SIZE, 2)
-    total   = state["wins"] + state["losses"]
+    pos    = state["position"]
+    unreal = 0.0
+    total  = state["wins"] + state["losses"]
     return jsonify({
-        "connected": state["connected"], "nifty_price": state["nifty_price"],
-        "signal": state["signal"], "reason": state["reason"],
-        "balance": round(state["balance"], 2), "total_pnl": round(state["total_pnl"], 2),
-        "pnl_pct": round(state["total_pnl"] / CAPITAL * 100, 2),
-        "wins": state["wins"], "losses": state["losses"],
-        "winrate": round(state["wins"] / total * 100, 1) if total > 0 else 0,
-        "position": pos, "unrealized": unreal,
-        "trades": state["trades"][:20], "log": state["log"][:20],
-        "last_update": state["last_update"], "strategy": state["strategy"], "capital": CAPITAL,
+        "connected"   : state["connected"],
+        "market_open" : state["market_open"],
+        "nifty_price" : state["nifty_price"],
+        "signal"      : state["signal"],
+        "reason"      : state["reason"],
+        "balance"     : round(state["balance"], 2),
+        "total_pnl"   : round(state["total_pnl"], 2),
+        "pnl_pct"     : round(state["total_pnl"] / CAPITAL * 100, 2),
+        "wins"        : state["wins"],
+        "losses"      : state["losses"],
+        "winrate"     : round(state["wins"] / total * 100, 1) if total > 0 else 0,
+        "position"    : pos,
+        "trades"      : state["trades"][:20],
+        "log"         : state["log"][:30],
+        "last_update" : state["last_update"],
+        "ema9"        : state["ema9"],
+        "ema21"       : state["ema21"],
+        "capital"     : CAPITAL,
+        "sl"          : abs(STOP_LOSS),
+        "target"      : TARGET,
     })
 
+# ═══════════════════════════════════════
+#   DASHBOARD HTML
+# ═══════════════════════════════════════
 HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NIFTY Paper Bot</title>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Sora:wght@600;700&display=swap" rel="stylesheet">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NSEAlgo — NIFTY Paper Bot</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Sora:wght@700&display=swap" rel="stylesheet">
 <style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{background:#080c14;color:#94a3b8;font-family:'JetBrains Mono',monospace;min-height:100vh}
-  .header{background:#0d1220;border-bottom:1px solid #1e2840;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10}
-  .logo{font-family:'Sora',sans-serif;font-size:16px;font-weight:700;color:#fff}.logo span{color:#f97316}
-  .live-dot{width:7px;height:7px;border-radius:50%;background:#22c55e;display:inline-block;animation:pulse 1.2s infinite;margin-right:5px}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-  .container{max-width:900px;margin:0 auto;padding:16px}
-  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
-  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
-  .card{background:#0d1220;border:1px solid #1e2840;border-radius:10px;padding:14px}
-  .card-title{font-size:9px;color:#334155;letter-spacing:.12em;margin-bottom:8px;text-transform:uppercase}
-  .big-num{font-family:'Sora',sans-serif;font-size:26px;font-weight:700;color:#fff;letter-spacing:-.02em}
-  .small-num{font-size:13px;font-weight:600;color:#fff}
-  .green{color:#22c55e}.red{color:#f43f5e}.orange{color:#f97316}.yellow{color:#fbbf24}
-  .signal-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;letter-spacing:.06em}
-  .sig-buy{background:#22c55e15;color:#22c55e;border:1px solid #22c55e30}
-  .sig-sell{background:#f43f5e15;color:#f43f5e;border:1px solid #f43f5e30}
-  .sig-hold{background:#ffffff08;color:#64748b;border:1px solid #ffffff15}
-  .sig-closed{background:#fbbf2415;color:#fbbf24;border:1px solid #fbbf2430}
-  .strategy-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #1e284060;font-size:11px}
-  .strategy-row:last-child{border-bottom:none}
-  .vote-bar{display:flex;gap:6px;margin-top:8px}
-  .vote{flex:1;padding:6px;border-radius:5px;text-align:center;font-size:10px;font-weight:600}
-  .vote-buy{background:#22c55e15;color:#22c55e;border:1px solid #22c55e20}
-  .vote-sell{background:#f43f5e15;color:#f43f5e;border:1px solid #f43f5e20}
-  table{width:100%;border-collapse:collapse;font-size:11px}
-  th{color:#334155;font-size:9px;letter-spacing:.1em;padding:6px 8px;text-align:left;border-bottom:1px solid #1e2840}
-  td{padding:7px 8px;border-bottom:1px solid #1e284040;color:#94a3b8}
-  .log-row{padding:5px 8px;border-radius:4px;font-size:10px;margin-bottom:3px;border-left:2px solid #1e2840}
-  .log-buy{border-left-color:#22c55e;color:#22c55e}
-  .log-sell{border-left-color:#f43f5e;color:#f43f5e}
-  .log-profit{border-left-color:#22c55e80;color:#22c55e}
-  .log-loss{border-left-color:#f43f5e80;color:#f43f5e}
-  .log-success{border-left-color:#22c55e;color:#22c55e}
-  .log-error{border-left-color:#f43f5e;color:#f43f5e}
-  .log-info{border-left-color:#1e2840;color:#475569}
-  .pos-card{border:1px solid #f9731630;background:#f9731608}
-  .stat-card .big-num{font-size:18px}
-  .update-badge{font-size:9px;color:#334155;padding:3px 8px;background:#1e284050;border-radius:99px}
-  @media(max-width:600px){.grid4{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}.big-num{font-size:20px}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#07090f;color:#8899aa;font-family:'JetBrains Mono',monospace;min-height:100vh;font-size:13px}
+.hdr{background:#0c1018;border-bottom:1px solid #1a2030;padding:11px 18px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:9}
+.logo{font-family:'Sora',sans-serif;font-size:15px;font-weight:700;color:#fff}.logo em{color:#f97316;font-style:normal}
+.live{width:7px;height:7px;border-radius:50%;background:#22c55e;display:inline-block;animation:blink 1.1s infinite;margin-right:5px}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+.upd{font-size:10px;color:#2a3848;padding:2px 9px;background:#0f151e;border-radius:99px;border:1px solid #1a2030}
+.wrap{max-width:920px;margin:0 auto;padding:14px 14px 40px}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-bottom:11px}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:11px}
+.card{background:#0c1018;border:1px solid #1a2030;border-radius:10px;padding:13px 15px}
+.ct{font-size:9px;color:#2a3848;letter-spacing:.12em;text-transform:uppercase;margin-bottom:7px}
+.big{font-family:'Sora',sans-serif;font-size:24px;font-weight:700;color:#fff;letter-spacing:-.02em}
+.sm{font-size:12px;font-weight:600;color:#fff}
+.g{color:#22c55e}.r{color:#f43f5e}.o{color:#f97316}.y{color:#fbbf24}
+.sig{display:inline-flex;align-items:center;gap:6px;padding:5px 13px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:.06em}
+.sbuy{background:#22c55e12;color:#22c55e;border:1px solid #22c55e28}
+.ssell{background:#f43f5e12;color:#f43f5e;border:1px solid #f43f5e28}
+.shold{background:#ffffff08;color:#445566;border:1px solid #ffffff12}
+.sclosed{background:#fbbf2412;color:#fbbf24;border:1px solid #fbbf2428}
+.pcard{border:1px solid #f9731628;background:#f9731606}
+.lr{padding:5px 8px;border-radius:4px;font-size:10px;margin-bottom:3px;border-left:2px solid #1a2030;line-height:1.4}
+.lbuy{border-left-color:#22c55e;color:#22c55e}
+.lsell{border-left-color:#f43f5e;color:#f43f5e}
+.lprofit{border-left-color:#22c55e80;color:#22c55e}
+.lloss{border-left-color:#f43f5e80;color:#f43f5e}
+.lsuccess{border-left-color:#22c55e;color:#22c55e}
+.lerror{border-left-color:#f43f5e;color:#f43f5e}
+.linfo{border-left-color:#1a2030;color:#445566}
+table{width:100%;border-collapse:collapse;font-size:11px}
+th{color:#2a3848;font-size:9px;letter-spacing:.1em;padding:5px 7px;text-align:left;border-bottom:1px solid #1a2030}
+td{padding:6px 7px;border-bottom:1px solid #1a203018;color:#8899aa}
+.ebar{height:5px;background:#131b27;border-radius:99px;overflow:hidden;margin-top:5px}
+.efill{height:100%;border-radius:99px;transition:width .5s}
+@media(max-width:580px){.g4{grid-template-columns:1fr 1fr}.g2{grid-template-columns:1fr}.big{font-size:19px}}
 </style>
 </head>
 <body>
-<div class="header">
-  <div class="logo"><span>NIFTY</span>Bot <span style="font-size:10px;font-weight:400;color:#334155;margin-left:8px">PAPER TRADING</span></div>
+<div class="hdr">
+  <div class="logo"><em>NSE</em>Algo <span style="font-size:10px;font-weight:400;color:#2a3848;margin-left:8px">PAPER TRADING · NIFTY F&O</span></div>
   <div style="display:flex;align-items:center;gap:10px">
-    <span id="live-indicator" style="font-size:10px;color:#334155">Connecting...</span>
-    <span class="update-badge" id="last-update">—</span>
+    <span id="li" style="font-size:10px;color:#2a3848">Connecting...</span>
+    <span class="upd" id="upd">—</span>
   </div>
 </div>
-<div class="container">
-  <div class="grid2" style="margin-bottom:12px">
+
+<div class="wrap">
+
+  <!-- Price + Signal -->
+  <div class="g2">
     <div class="card">
-      <div class="card-title">NIFTY 50 Live Price</div>
-      <div class="big-num" id="nifty-price">₹—</div>
-      <div style="margin-top:8px;font-size:11px;color:#334155" id="price-sub">Waiting for data...</div>
+      <div class="ct">NIFTY 50 live price</div>
+      <div class="big" id="np">₹—</div>
+      <div style="margin-top:6px;font-size:10px;color:#2a3848">
+        EMA9: <span id="e9" class="o">—</span> &nbsp;|&nbsp; EMA21: <span id="e21" style="color:#818cf8">—</span>
+      </div>
     </div>
     <div class="card">
-      <div class="card-title">Current Signal</div>
-      <div id="signal-badge"><span class="signal-badge sig-hold">— WAITING</span></div>
-      <div style="margin-top:8px;font-size:11px;color:#475569" id="signal-reason">—</div>
+      <div class="ct">Current signal</div>
+      <div id="sb"><span class="sig shold">— WAITING</span></div>
+      <div style="margin-top:7px;font-size:10px;color:#445566" id="sr">—</div>
     </div>
   </div>
-  <div class="grid4">
-    <div class="card stat-card"><div class="card-title">Balance</div><div class="big-num" id="balance">₹—</div></div>
-    <div class="card stat-card"><div class="card-title">Total P&L</div><div class="big-num" id="total-pnl">₹0</div><div style="font-size:10px;margin-top:3px" id="pnl-pct">0.00%</div></div>
-    <div class="card stat-card"><div class="card-title">Win Rate</div><div class="big-num yellow" id="winrate">0%</div><div style="font-size:10px;color:#334155;margin-top:3px" id="trade-count">0 trades</div></div>
-    <div class="card stat-card"><div class="card-title">Wins / Losses</div><div style="display:flex;gap:10px;align-items:baseline;margin-top:4px"><span class="big-num green" id="wins">0</span><span style="color:#334155">/</span><span class="big-num red" id="losses">0</span></div></div>
-  </div>
-  <div class="card pos-card" id="position-card" style="margin-bottom:12px;display:none">
-    <div class="card-title">📂 Open Position</div>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px" id="position-grid"></div>
-  </div>
-  <div class="card" id="no-position-card" style="margin-bottom:12px;text-align:center;padding:16px">
-    <div style="font-size:11px;color:#334155">📂 No open position — waiting for signal</div>
-  </div>
-  <div class="card" style="margin-bottom:12px">
-    <div class="card-title">Strategy Breakdown (2/3 vote needed)</div>
-    <div class="strategy-row"><span style="color:#f97316;font-size:11px">EMA 9/21</span><span id="ema-signal" style="font-size:11px">—</span></div>
-    <div class="strategy-row"><span style="color:#818cf8;font-size:11px">Support / Resistance</span><span id="sr-signal" style="font-size:11px">—</span></div>
-    <div class="strategy-row"><span style="color:#22c55e;font-size:11px">Volume Momentum</span><span id="vol-signal" style="font-size:11px">—</span></div>
-    <div class="vote-bar">
-      <div class="vote vote-buy" id="buy-votes">🟢 BUY 0/3</div>
-      <div class="vote vote-sell" id="sell-votes">🔴 SELL 0/3</div>
-    </div>
-  </div>
-  <div class="grid2">
+
+  <!-- Stats -->
+  <div class="g4">
     <div class="card">
-      <div class="card-title">Trade History</div>
-      <div id="trades-empty" style="font-size:11px;color:#334155;padding:10px 0">No trades yet today</div>
-      <table id="trades-table" style="display:none">
-        <thead><tr><th>Option</th><th>P&L</th><th>Time</th></tr></thead>
-        <tbody id="trades-body"></tbody>
+      <div class="ct">Balance</div>
+      <div class="big" style="font-size:18px" id="bal">₹—</div>
+    </div>
+    <div class="card">
+      <div class="ct">Total P&L</div>
+      <div class="big" style="font-size:18px" id="pnl">₹0</div>
+      <div style="font-size:10px;margin-top:2px" id="pnlp">0.00%</div>
+    </div>
+    <div class="card">
+      <div class="ct">Win rate</div>
+      <div class="big y" style="font-size:18px" id="wr">0%</div>
+      <div style="font-size:10px;color:#2a3848;margin-top:2px" id="tc">0 trades</div>
+    </div>
+    <div class="card">
+      <div class="ct">Wins / Losses</div>
+      <div style="display:flex;gap:10px;align-items:baseline;margin-top:3px">
+        <span class="big g" style="font-size:18px" id="wi">0</span>
+        <span style="color:#2a3848">/</span>
+        <span class="big r" style="font-size:18px" id="lo">0</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Open Position -->
+  <div class="card pcard" id="pc" style="margin-bottom:11px;display:none">
+    <div class="ct">📂 Open position</div>
+    <div id="pg" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:4px"></div>
+    <div style="margin-top:10px;display:flex;gap:20px;font-size:10px">
+      <span style="color:#2a3848">SL: <span class="r">-₹<span id="sl">—</span></span></span>
+      <span style="color:#2a3848">Target: <span class="g">+₹<span id="tg">—</span></span></span>
+      <span style="color:#2a3848">Unrealized: <span id="unr" class="sm">₹—</span></span>
+    </div>
+  </div>
+  <div class="card" id="npc" style="margin-bottom:11px;text-align:center;padding:14px">
+    <div style="font-size:10px;color:#2a3848">📂 No open position — waiting for signal</div>
+  </div>
+
+  <!-- EMA indicator -->
+  <div class="card" style="margin-bottom:11px">
+    <div class="ct">EMA 9 / 21 trend</div>
+    <div style="display:flex;gap:24px;margin-top:4px">
+      <div><div style="font-size:9px;color:#2a3848;margin-bottom:3px">EMA 9 (fast)</div><div class="sm o" id="ema9v">—</div></div>
+      <div><div style="font-size:9px;color:#2a3848;margin-bottom:3px">EMA 21 (slow)</div><div class="sm" style="color:#818cf8" id="ema21v">—</div></div>
+      <div><div style="font-size:9px;color:#2a3848;margin-bottom:3px">Spread</div><div class="sm" id="emaspread">—</div></div>
+      <div><div style="font-size:9px;color:#2a3848;margin-bottom:3px">Trend</div><div class="sm" id="ematrend">—</div></div>
+    </div>
+    <div class="ebar" style="margin-top:10px">
+      <div class="efill" id="emabar" style="width:50%;background:#22c55e"></div>
+    </div>
+  </div>
+
+  <!-- Trade history + Log -->
+  <div class="g2">
+    <div class="card">
+      <div class="ct">Trade history</div>
+      <div id="te" style="font-size:10px;color:#2a3848;padding:8px 0">No trades yet today</div>
+      <table id="tt" style="display:none">
+        <thead><tr><th>Symbol</th><th>P&L</th><th>Reason</th><th>Time</th></tr></thead>
+        <tbody id="tb"></tbody>
       </table>
     </div>
     <div class="card">
-      <div class="card-title">Activity Log</div>
-      <div id="log-container"></div>
+      <div class="ct">Activity log</div>
+      <div id="lc" style="max-height:260px;overflow-y:auto"></div>
     </div>
   </div>
+
 </div>
+
 <script>
-function fmt(n){return new Intl.NumberFormat('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}).format(n)}
-async function update(){
+const fi = n => new Intl.NumberFormat('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}).format(n);
+
+async function tick(){
   try{
-    const r=await fetch('/api/state');const d=await r.json();
-    document.getElementById('live-indicator').innerHTML=d.connected?'<span class="live-dot"></span>Live':'Connecting...';
-    document.getElementById('last-update').textContent='Updated '+d.last_update;
-    document.getElementById('nifty-price').textContent='₹'+fmt(d.nifty_price);
-    document.getElementById('price-sub').textContent='Capital: ₹'+fmt(d.capital);
-    const sig=d.signal;let cls='sig-hold',icon='—';
-    if(sig==='BUY'){cls='sig-buy';icon='▲'}else if(sig==='SELL'){cls='sig-sell';icon='▼'}else if(sig==='MARKET CLOSED'){cls='sig-closed';icon='💤'}
-    document.getElementById('signal-badge').innerHTML=`<span class="signal-badge ${cls}">${icon} ${sig}</span>`;
-    document.getElementById('signal-reason').textContent=d.reason;
-    const pnlEl=document.getElementById('total-pnl');
-    pnlEl.textContent=(d.total_pnl>=0?'+':'')+'₹'+fmt(Math.abs(d.total_pnl));
-    pnlEl.className='big-num '+(d.total_pnl>=0?'green':'red');
-    document.getElementById('pnl-pct').textContent=(d.pnl_pct>=0?'+':'')+d.pnl_pct+'%';
-    document.getElementById('balance').textContent='₹'+fmt(d.balance);
-    document.getElementById('winrate').textContent=d.winrate+'%';
-    document.getElementById('trade-count').textContent=(d.wins+d.losses)+' trades';
-    document.getElementById('wins').textContent=d.wins;
-    document.getElementById('losses').textContent=d.losses;
+    const d = await fetch('/api/state').then(r=>r.json());
+
+    // header
+    document.getElementById('li').innerHTML = d.connected ? '<span class="live"></span>Live' : 'Connecting...';
+    document.getElementById('upd').textContent = 'Updated ' + d.last_update;
+
+    // price
+    document.getElementById('np').textContent = '₹' + fi(d.nifty_price);
+    document.getElementById('e9').textContent  = d.ema9  || '—';
+    document.getElementById('e21').textContent = d.ema21 || '—';
+
+    // signal
+    const s = d.signal;
+    let sc='shold', ic='—';
+    if(s==='BUY'){sc='sbuy';ic='▲'} else if(s==='SELL'){sc='ssell';ic='▼'} else if(s==='MARKET CLOSED'){sc='sclosed';ic='💤'}
+    document.getElementById('sb').innerHTML = `<span class="sig ${sc}">${ic} ${s}</span>`;
+    document.getElementById('sr').textContent = d.reason;
+
+    // stats
+    const pe = document.getElementById('pnl');
+    pe.textContent = (d.total_pnl>=0?'+':'')+'₹'+fi(Math.abs(d.total_pnl));
+    pe.className = 'big ' + (d.total_pnl>=0?'g':'r') + ' ' ;
+    pe.style.fontSize='18px';
+    document.getElementById('pnlp').textContent = (d.pnl_pct>=0?'+':'')+d.pnl_pct+'%';
+    document.getElementById('pnlp').style.color = d.pnl_pct>=0?'#22c55e':'#f43f5e';
+    document.getElementById('bal').textContent = '₹'+fi(d.balance);
+    document.getElementById('wr').textContent  = d.winrate+'%';
+    document.getElementById('tc').textContent  = (d.wins+d.losses)+' trades';
+    document.getElementById('wi').textContent  = d.wins;
+    document.getElementById('lo').textContent  = d.losses;
+
+    // position
     if(d.position){
-      document.getElementById('position-card').style.display='block';
-      document.getElementById('no-position-card').style.display='none';
-      const p=d.position;const uc=d.unrealized>=0?'green':'red';
-      document.getElementById('position-grid').innerHTML=`
-        <div><div style="font-size:9px;color:#334155;margin-bottom:3px">OPTION</div><div class="small-num orange">NIFTY ${p.strike} ${p.type}</div></div>
-        <div><div style="font-size:9px;color:#334155;margin-bottom:3px">ENTRY</div><div class="small-num">₹${fmt(p.entry_price)}</div></div>
-        <div><div style="font-size:9px;color:#334155;margin-bottom:3px">UNREALIZED P&L</div><div class="small-num ${uc}">${d.unrealized>=0?'+':''}₹${fmt(Math.abs(d.unrealized))}</div></div>
-        <div><div style="font-size:9px;color:#334155;margin-bottom:3px">NIFTY AT ENTRY</div><div class="small-num">₹${fmt(p.entry_nifty)}</div></div>
-        <div><div style="font-size:9px;color:#334155;margin-bottom:3px">COST</div><div class="small-num">₹${fmt(p.cost)}</div></div>
-        <div><div style="font-size:9px;color:#334155;margin-bottom:3px">ENTRY TIME</div><div class="small-num">${p.entry_time}</div></div>`;
-    }else{
-      document.getElementById('position-card').style.display='none';
-      document.getElementById('no-position-card').style.display='block';
+      document.getElementById('pc').style.display='block';
+      document.getElementById('npc').style.display='none';
+      const p = d.position;
+      document.getElementById('pg').innerHTML = `
+        <div><div style="font-size:9px;color:#2a3848;margin-bottom:2px">SYMBOL</div><div class="sm o">${p.symbol}</div></div>
+        <div><div style="font-size:9px;color:#2a3848;margin-bottom:2px">ENTRY</div><div class="sm">₹${fi(p.entry_price)}</div></div>
+        <div><div style="font-size:9px;color:#2a3848;margin-bottom:2px">COST</div><div class="sm">₹${fi(p.cost)}</div></div>
+        <div><div style="font-size:9px;color:#2a3848;margin-bottom:2px">NIFTY AT ENTRY</div><div class="sm">₹${fi(p.entry_nifty)}</div></div>
+        <div><div style="font-size:9px;color:#2a3848;margin-bottom:2px">TYPE</div><div class="sm">${p.type}</div></div>
+        <div><div style="font-size:9px;color:#2a3848;margin-bottom:2px">ENTRY TIME</div><div class="sm">${p.entry_time}</div></div>`;
+      document.getElementById('sl').textContent = fi(d.sl);
+      document.getElementById('tg').textContent = fi(d.target);
+    } else {
+      document.getElementById('pc').style.display='none';
+      document.getElementById('npc').style.display='block';
     }
-    const st=d.strategy;
-    document.getElementById('ema-signal').textContent=st.ema||'—';
-    document.getElementById('sr-signal').textContent=st.sr||'—';
-    document.getElementById('vol-signal').textContent=st.volume||'—';
-    document.getElementById('buy-votes').textContent='🟢 BUY '+st.buy_votes+'/3';
-    document.getElementById('sell-votes').textContent='🔴 SELL '+st.sell_votes+'/3';
+
+    // EMA
+    document.getElementById('ema9v').textContent  = d.ema9  || '—';
+    document.getElementById('ema21v').textContent = d.ema21 || '—';
+    if(d.ema9 && d.ema21){
+      const spread = (d.ema9 - d.ema21).toFixed(2);
+      const bull = d.ema9 > d.ema21;
+      document.getElementById('emaspread').textContent = (bull?'+':'')+spread;
+      document.getElementById('emaspread').className = 'sm ' + (bull?'g':'r');
+      document.getElementById('ematrend').textContent = bull ? '▲ Bullish' : '▼ Bearish';
+      document.getElementById('ematrend').className = 'sm ' + (bull?'g':'r');
+      const pct = Math.min(100, Math.max(0, 50 + (d.ema9-d.ema21)/d.ema21*2000));
+      document.getElementById('emabar').style.width = pct+'%';
+      document.getElementById('emabar').style.background = bull ? '#22c55e' : '#f43f5e';
+    }
+
+    // trades
     if(d.trades.length>0){
-      document.getElementById('trades-empty').style.display='none';
-      document.getElementById('trades-table').style.display='table';
-      document.getElementById('trades-body').innerHTML=d.trades.map(t=>`<tr><td>${t.option}</td><td class="${t.pnl>=0?'green':'red'}">${t.pnl>=0?'+':''}₹${fmt(Math.abs(t.pnl))}</td><td style="color:#334155">${t.entry_time}</td></tr>`).join('');
+      document.getElementById('te').style.display='none';
+      document.getElementById('tt').style.display='table';
+      document.getElementById('tb').innerHTML = d.trades.map(t=>`
+        <tr>
+          <td class="o">${t.symbol}</td>
+          <td class="${t.pnl>=0?'g':'r'}">${t.pnl>=0?'+':''}₹${fi(Math.abs(t.pnl))}</td>
+          <td style="color:#2a3848;font-size:10px">${t.reason}</td>
+          <td style="color:#2a3848">${t.entry_time}</td>
+        </tr>`).join('');
     }
-    document.getElementById('log-container').innerHTML=d.log.map(l=>`<div class="log-row log-${l.type}"><span style="color:#334155">${l.time} </span>${l.msg}</div>`).join('');
-  }catch(e){console.error(e)}
+
+    // log
+    document.getElementById('lc').innerHTML = d.log.map(l=>`
+      <div class="lr l${l.level}">
+        <span style="color:#2a3848">${l.time} </span>${l.msg}
+      </div>`).join('');
+
+  } catch(e){ console.error(e) }
 }
-update();setInterval(update,10000);
+
+tick();
+setInterval(tick, 10000);
 </script>
 </body>
 </html>"""
 
 @app.route("/")
-def index():
+def home():
     return render_template_string(HTML)
 
+# ═══════════════════════════════════════
+#   START
+# ═══════════════════════════════════════
 threading.Thread(target=bot_loop, daemon=True).start()
 
 if __name__ == "__main__":

@@ -6,10 +6,10 @@ from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-API_KEY     = os.environ.get("API_KEY",     "your_api_key")
-CLIENT_CODE = os.environ.get("CLIENT_CODE", "your_client_code")
-PASSWORD    = os.environ.get("PASSWORD",    "your_mpin")
-TOTP_TOKEN  = os.environ.get("TOTP_TOKEN",  "your_totp_secret")
+API_KEY     = os.environ.get("API_KEY",     "").strip()
+CLIENT_CODE = os.environ.get("CLIENT_CODE", "").strip()
+PASSWORD    = os.environ.get("PASSWORD",    "").strip()
+TOTP_TOKEN  = os.environ.get("TOTP_TOKEN",  "").strip()
 
 CAPITAL       = 1000000
 LOT_SIZE      = 25

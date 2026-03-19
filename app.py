@@ -8,10 +8,10 @@ app = Flask(__name__)
 # ═══════════════════════════════════════
 #   CREDENTIALS (set in Railway Variables)
 # ═══════════════════════════════════════
-API_KEY     = os.environ.get("API_KEY",     "")
-CLIENT_CODE = os.environ.get("CLIENT_CODE", "")
-PASSWORD    = os.environ.get("PASSWORD",    "")
-TOTP_TOKEN  = os.environ.get("TOTP_TOKEN",  "")
+API_KEY     = os.environ.get("API_KEY",     "").strip()
+CLIENT_CODE = os.environ.get("CLIENT_CODE", "").strip()
+PASSWORD    = os.environ.get("PASSWORD",    "").strip()
+TOTP_TOKEN  = os.environ.get("TOTP_TOKEN",  "").strip()
 
 # ═══════════════════════════════════════
 #   SETTINGS

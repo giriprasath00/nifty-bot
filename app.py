@@ -67,7 +67,11 @@ def connect_angel():
     try:
         obj  = SmartConnect(api_key=API_KEY)
         totp = pyotp.TOTP(TOTP_TOKEN).now()
+        print(f"TOTP generated: {totp}")
+        print(f"CLIENT_CODE: {CLIENT_CODE}")
+        print(f"API_KEY: {API_KEY}")
         data = obj.generateSession(CLIENT_CODE, PASSWORD, totp)
+        print(f"Session response: {data}")
         if not data["status"]:
             add_log(f"Login failed: {data['message']}", "error")
             return None
@@ -75,6 +79,8 @@ def connect_angel():
         add_log("Connected to Angel One SmartAPI ✓", "success")
         return obj
     except Exception as e:
+        import traceback
+        print(f"Full error: {traceback.format_exc()}")
         add_log(f"Connection error: {e}", "error")
         return None
 

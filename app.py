@@ -2,6 +2,8 @@ from flask import Flask, jsonify, render_template_string
 from SmartApi import SmartConnect
 import pyotp, pandas as pd, threading, time, os
 from datetime import datetime, timedelta
+import pytz
+IST = pytz.timezone("Asia/Kolkata")
 
 app = Flask(__name__)
 
@@ -74,7 +76,8 @@ def connect_angel():
 #   GET NIFTY CANDLE DATA
 # ═══════════════════════════════════════
 def get_candle_data(obj):
-    now = datetime.now()
+    now = datetime.now(IST).replace(tzinfo=None)
+ 
     params = {
         "exchange"    : NIFTY_EXCH,
         "symboltoken" : NIFTY_TOKEN,

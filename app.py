@@ -139,13 +139,12 @@ def get_option_symbol(price, signal):
     return f"NIFTY{expiry}{strike}{otype}"
 
 def get_nearest_expiry():
-    today = datetime.now()
-    days_ahead = 3 - today.weekday()
-    if days_ahead <= 0:
-        days_ahead += 7
+    today = datetime.now(IST).replace(tzinfo=None)
+    days_ahead = (3 - today.weekday()) % 7
+    if days_ahead == 0:
+        days_ahead = 7
     expiry = today + timedelta(days=days_ahead)
-    return expiry.strftime("%d%b").upper()[:-2] + expiry.strftime("%b").upper()[:3]
-
+    return expiry.strftime("%d%b%y").upper()
 def get_option_ltp(obj, symbol):
     try:
         data = obj.ltpData("NFO", symbol, "")

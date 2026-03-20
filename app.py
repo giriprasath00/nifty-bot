@@ -137,7 +137,7 @@ nfo_symbols = {}
 def load_symbol_master():
     global nfo_symbols
     try:
-        url  = "[margincalculator.angelbroking.com](https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json)"
+        url  = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
         data = requests.get(url, timeout=10).json()
         for item in data:
             if item.get("exch_seg") == "NFO" and "NIFTY" in item.get("symbol", ""):

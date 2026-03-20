@@ -144,7 +144,10 @@ def get_nearest_expiry():
     if days_ahead == 0:
         days_ahead = 7
     expiry = today + timedelta(days=days_ahead)
-    return expiry.strftime("%d%b%y").upper()
+    day   = expiry.strftime("%d")
+    month = expiry.strftime("%b").upper()
+    year  = expiry.strftime("%y")
+    return f"{day}{month}{year}"
 def get_option_ltp(obj, symbol):
     try:
         data = obj.ltpData("NFO", symbol, "")

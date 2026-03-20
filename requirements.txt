@@ -4,3 +4,4 @@ pyotp
 pandas
 websocket-client
 logzero
+pytz

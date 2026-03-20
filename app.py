@@ -81,7 +81,7 @@ def get_candle_data(obj):
     params = {
         "exchange"    : NIFTY_EXCH,
         "symboltoken" : NIFTY_TOKEN,
-        "interval"    : "FIVE_MINUTE",
+        "interval"    : "ONE_MINUTE",
         "fromdate"    : (now - timedelta(days=5)).strftime("%Y-%m-%d %H:%M"),
         "todate"      : now.strftime("%Y-%m-%d %H:%M"),
     }
@@ -317,8 +317,8 @@ def bot_loop():
             except:
                 pass
 
-        # ── wait for next 5-min candle ────────────────
-        sleep_secs = 300 - (time.time() % 300)
+         # ── wait for next 1-min candle ────────────────
+        sleep_secs = 60 - (time.time() % 60)
         time.sleep(sleep_secs)
 
 # ═══════════════════════════════════════

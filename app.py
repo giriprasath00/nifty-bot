@@ -129,6 +129,27 @@ def get_signal(df):
         return "SELL", f"EMA bearish trend | RSI {rsi}"
     return "HOLD", f"No clear signal | RSI {rsi}"
 
+
+import requests,json
+
+nfo_symbols = {}
+
+def load_symbol_master():
+    global nfo_symbols
+    try:
+        url  = "[margincalculator.angelbroking.com](https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json)"
+        data = requests.get(url, timeout=10).json()
+        for item in data:
+            if item.get("exch_seg") == "NFO" and "NIFTY" in item.get("symbol", ""):
+                nfo_symbols[item["symbol"]] = item["token"]
+        add_log(f"Loaded {len(nfo_symbols)} NIFTY NFO symbols", "info")
+    except Exception as e:
+        add_log(f"Symbol master load failed: {e}", "error")
+
+def get_option_token(symbol):
+    return nfo_symbols.get(symbol)
+
+
 # ═══════════════════════════════════════
 #   GET OPTION SYMBOL (NSE F&O)
 # ═══════════════════════════════════════
@@ -145,13 +166,19 @@ def get_nearest_expiry():
     expiry = today + timedelta(days=days_ahead)
     return expiry.strftime("%d%b%y").upper()
 def get_option_ltp(obj, symbol):
+    token = get_option_token(symbol)
+    if not token:
+        add_log(f"Token not found for {symbol}", "error")
+        return None
     try:
-        data = obj.ltpData("NFO", symbol, "")
-        if data.get("status") and data.get("data"):
-            return float(data["data"]["ltp"])
+        data = obj.getMarketData("LTP", {"NFO": [token]})
+        fetched = data.get("data", {}).get("fetched", [])
+        if fetched:
+            return float(fetched[0]["ltp"])
     except Exception as e:
-        add_log(f"LTP fetch error ({symbol}): {e}", "error")
+        add_log(f"LTP error ({symbol}): {e}", "error")
     return None
+
 
 # ═══════════════════════════════════════
 #   OPEN PAPER TRADE
@@ -221,6 +248,7 @@ def bot_loop():
 
     while obj is None:
         obj = connect_angel()
+        load_symbol_master() 
         if obj is None:
             add_log("Retrying connection in 30s...", "error")
             time.sleep(30)

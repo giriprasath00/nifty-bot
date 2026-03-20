@@ -142,9 +142,6 @@ def get_nearest_expiry():
     days_ahead = (3 - today.weekday()) % 7
     if days_ahead == 0:
         days_ahead = 7
-    # If expiry is today, use next week
-    if days_ahead == 0 or (days_ahead == 7 and today.weekday() == 3):
-        days_ahead = 7
     expiry = today + timedelta(days=days_ahead)
     return expiry.strftime("%d%b%y").upper()
 def get_option_ltp(obj, symbol):

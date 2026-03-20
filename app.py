@@ -253,7 +253,7 @@ def bot_loop():
             add_log("Retrying connection in 30s...", "error")
             time.sleep(30)
 
-    add_log("Bot active — checking every 1 min during market hours", "info")
+    add_log("Bot active — checking every 5 mins during market hours", "info")
 
     while True:
         try:
@@ -317,8 +317,8 @@ def bot_loop():
             except:
                 pass
 
-         # ── wait for next 1-min candle ────────────────
-        sleep_secs = 60 - (time.time() % 60)
+         # ── wait for next 5-min candle ────────────────
+        sleep_secs = 300 - (time.time() % 300)
         time.sleep(sleep_secs)
 
 # ═══════════════════════════════════════

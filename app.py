@@ -47,7 +47,7 @@ state = {
 }
 
 def add_log(msg, level="info"):
-    t = datetime.now().strftime("%H:%M:%S")
+    t = datetime.now(IST).strftime("%H:%M:%S")
     entry = {"msg": msg, "level": level, "time": t}
     state["log"].insert(0, entry)
     state["log"] = state["log"][:60]
@@ -182,7 +182,7 @@ def open_trade(obj, signal, price, reason):
         "entry_nifty" : price,
         "cost"        : cost,
         "reason"      : reason,
-        "entry_time"  : datetime.now().strftime("%H:%M:%S"),
+        "entry_time"  : datetime.now(IST).strftime("%H:%M:%S"),
     }
     add_log(f"{'BUY' if signal=='BUY' else 'SELL'} {symbol} @ ₹{ltp:.2f} | Cost ₹{cost:,.0f}", "buy" if signal=="BUY" else "sell")
 
@@ -211,7 +211,7 @@ def close_trade(obj, reason="Signal"):
         "exit"       : ltp,
         "pnl"        : round(pnl, 2),
         "entry_time" : pos["entry_time"],
-        "exit_time"  : datetime.now().strftime("%H:%M:%S"),
+        "exit_time"  : datetime.now(IST).strftime("%H:%M:%S"),
         "reason"     : reason,
     })
     add_log(f"EXIT {pos['symbol']} @ ₹{ltp:.2f} | P&L {'+' if pnl>=0 else ''}₹{pnl:,.0f} ({reason})", "profit" if pnl>=0 else "loss")

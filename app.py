@@ -1,4 +1,4 @@
- from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify, render_template_string
 from SmartApi import SmartConnect
 import pyotp, pandas as pd, threading, time, os, requests, json
 from datetime import datetime, timedelta

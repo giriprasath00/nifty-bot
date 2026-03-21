@@ -470,8 +470,8 @@ def api_state():
         "sell_votes"  : state["sell_votes"],
         "in_session"  : state["in_session"],
         "capital"     : CAPITAL,
-        "sl"          : abs(STOP_LOSS),
-        "target"      : TARGET,
+        "sl"          : STOP_LOSS_PCT * 100,
+        "target"      : TARGET_PCT * 100,
     })
 
 # ═══════════════════════════════════════

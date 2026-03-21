@@ -299,41 +299,35 @@ def get_option_ltp(obj, symbol):
 # ═══════════════════════════════════════
 def open_trade(obj, signal, price, reason):
     symbol = get_option_symbol(price, signal)
-    ltp    = get_option_ltp(obj, symbol)
+    ltp = get_option_ltp(obj, symbol)
     if ltp is None:
         add_log(f"Could not fetch LTP for {symbol}", "error")
         return
-# use 80% of available balance, rounded to whole lots
-max_spend  = state["balance"] * CAPITAL_USE_PCT
-lots       = max(1, int(max_spend / (ltp * LOT_SIZE)))
-qty        = lots * LOT_SIZE
-cost       = ltp * qty
-
+    max_spend = state["balance"] * CAPITAL_USE_PCT
+    lots = max(1, int(max_spend / (ltp * LOT_SIZE)))
+    qty = lots * LOT_SIZE
+    cost = ltp * qty
     if cost > state["balance"]:
         add_log("Insufficient balance!", "error")
         return
-
-# dynamic SL and target based on entry price
-sl_price  = ltp * (1 - STOP_LOSS_PCT)   # 15% below entry
-tgt_price = ltp * (1 + TARGET_PCT)       # 45% above entry
-
-state["balance"]  -= cost
-state["position"]  = {
-    "symbol"      : symbol,
-    "type"        : "CE" if signal == "BUY" else "PE",
-    "signal"      : signal,
-    "entry_price" : ltp,
-    "entry_nifty" : price,
-    "cost"        : cost,
-    "lots"        : lots,
-    "qty"         : qty,
-    "sl_price"    : round(sl_price, 2),
-    "tgt_price"   : round(tgt_price, 2),
-    "reason"      : reason,
-    "entry_time"  : datetime.now(IST).strftime("%H:%M:%S"),
-}
-add_log(f"{'BUY' if signal=='BUY' else 'SELL'} {symbol} @ ₹{ltp:.2f} | {lots} lots × {LOT_SIZE} = {qty} units | Cost ₹{cost:,.0f}", "buy" if signal=="BUY" else "sell")
-
+    sl_price = round(ltp * (1 - STOP_LOSS_PCT), 2)
+    tgt_price = round(ltp * (1 + TARGET_PCT), 2)
+    state["balance"] -= cost
+    state["position"] = {
+        "symbol"      : symbol,
+        "type"        : "CE" if signal == "BUY" else "PE",
+        "signal"      : signal,
+        "entry_price" : ltp,
+        "entry_nifty" : price,
+        "cost"        : cost,
+        "lots"        : lots,
+        "qty"         : qty,
+        "sl_price"    : sl_price,
+        "tgt_price"   : tgt_price,
+        "reason"      : reason,
+        "entry_time"  : datetime.now(IST).strftime("%H:%M:%S"),
+    }
+    add_log(f"{'BUY' if signal=='BUY' else 'SELL'} {symbol} @ ₹{ltp:.2f} | {lots} lots | Cost ₹{cost:,.0f} | SL ₹{sl_price} | TGT ₹{tgt_price}", "buy" if signal=="BUY" else "sell")
 # ═══════════════════════════════════════
 #   CLOSE TRADE
 # ═══════════════════════════════════════

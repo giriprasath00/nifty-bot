@@ -20,8 +20,8 @@ TOTP_TOKEN  = os.environ.get("TOTP_TOKEN",  "")
 # ═══════════════════════════════════════
 CAPITAL     = 1000000
 LOT_SIZE    = 25
-STOP_LOSS   = -1500   # tighter SL
-TARGET      = 4500    # 1:3 risk reward
+STOP_LOSS   = -15000   # tighter SL
+TARGET      = 45000    # 1:3 risk reward
 NIFTY_TOKEN = "99926000"
 NIFTY_EXCH  = "NSE"
 

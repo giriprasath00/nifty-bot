@@ -309,9 +309,9 @@ lots       = max(1, int(max_spend / (ltp * LOT_SIZE)))
 qty        = lots * LOT_SIZE
 cost       = ltp * qty
 
-if cost > state["balance"]:
-    add_log("Insufficient balance!", "error")
-    return
+    if cost > state["balance"]:
+        add_log("Insufficient balance!", "error")
+        return
 
 # dynamic SL and target based on entry price
 sl_price  = ltp * (1 - STOP_LOSS_PCT)   # 15% below entry

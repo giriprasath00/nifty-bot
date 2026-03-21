@@ -16,14 +16,20 @@ PASSWORD    = os.environ.get("PASSWORD",    "")
 TOTP_TOKEN  = os.environ.get("TOTP_TOKEN",  "")
 
 # ═══════════════════════════════════════
+# ═══════════════════════════════════════
 #   SETTINGS
 # ═══════════════════════════════════════
-CAPITAL     = 1000000
-LOT_SIZE    = 25
-STOP_LOSS   = -15000   # tighter SL
-TARGET      = 45000    # 1:3 risk reward
+CAPITAL     = 1000000   # ₹10 Lakh paper capital
+LOT_SIZE    = 65        # NIFTY current lot size (Jan 2026)
 NIFTY_TOKEN = "99926000"
 NIFTY_EXCH  = "NSE"
+
+# Risk management
+STOP_LOSS_PCT = 0.15    # exit if option loses 15% of entry price
+TARGET_PCT    = 0.45    # exit if option gains 45% of entry price
+
+# Use 80% of available balance per trade (maximize capital use)
+CAPITAL_USE_PCT = 0.80
 
 # Best trading windows (IST)
 SESSION_1_START = (9, 30)
@@ -297,22 +303,36 @@ def open_trade(obj, signal, price, reason):
     if ltp is None:
         add_log(f"Could not fetch LTP for {symbol}", "error")
         return
-    cost = ltp * LOT_SIZE
-    if cost > state["balance"]:
-        add_log("Insufficient balance!", "error")
-        return
-    state["balance"]  -= cost
-    state["position"]  = {
-        "symbol"      : symbol,
-        "type"        : "CE" if signal == "BUY" else "PE",
-        "signal"      : signal,
-        "entry_price" : ltp,
-        "entry_nifty" : price,
-        "cost"        : cost,
-        "reason"      : reason,
-        "entry_time"  : datetime.now(IST).strftime("%H:%M:%S"),
-    }
-    add_log(f"{'BUY' if signal=='BUY' else 'SELL'} {symbol} @ ₹{ltp:.2f} | Cost ₹{cost:,.0f}", "buy" if signal=="BUY" else "sell")
+# use 80% of available balance, rounded to whole lots
+max_spend  = state["balance"] * CAPITAL_USE_PCT
+lots       = max(1, int(max_spend / (ltp * LOT_SIZE)))
+qty        = lots * LOT_SIZE
+cost       = ltp * qty
+
+if cost > state["balance"]:
+    add_log("Insufficient balance!", "error")
+    return
+
+# dynamic SL and target based on entry price
+sl_price  = ltp * (1 - STOP_LOSS_PCT)   # 15% below entry
+tgt_price = ltp * (1 + TARGET_PCT)       # 45% above entry
+
+state["balance"]  -= cost
+state["position"]  = {
+    "symbol"      : symbol,
+    "type"        : "CE" if signal == "BUY" else "PE",
+    "signal"      : signal,
+    "entry_price" : ltp,
+    "entry_nifty" : price,
+    "cost"        : cost,
+    "lots"        : lots,
+    "qty"         : qty,
+    "sl_price"    : round(sl_price, 2),
+    "tgt_price"   : round(tgt_price, 2),
+    "reason"      : reason,
+    "entry_time"  : datetime.now(IST).strftime("%H:%M:%S"),
+}
+add_log(f"{'BUY' if signal=='BUY' else 'SELL'} {symbol} @ ₹{ltp:.2f} | {lots} lots × {LOT_SIZE} = {qty} units | Cost ₹{cost:,.0f}", "buy" if signal=="BUY" else "sell")
 
 # ═══════════════════════════════════════
 #   CLOSE TRADE
@@ -323,8 +343,9 @@ def close_trade(obj, reason="Signal"):
     if ltp is None:
         add_log("Cannot close — LTP unavailable", "error")
         return
-    pnl = (ltp - pos["entry_price"]) * LOT_SIZE
-    state["balance"]   += ltp * LOT_SIZE
+    qty = pos.get("qty", LOT_SIZE)
+    pnl = (ltp - pos["entry_price"]) * qty
+    state["balance"]   += ltp * qty
     state["total_pnl"] += pnl
     state["position"]   = None
     if pnl >= 0: state["wins"]   += 1
@@ -397,12 +418,12 @@ def bot_loop():
                 ltp = get_option_ltp(obj, pos["symbol"])
                 if ltp:
                     unrealized = (ltp - pos["entry_price"]) * LOT_SIZE
-                    if unrealized <= STOP_LOSS:
-                        add_log(f"Stop loss hit! ₹{unrealized:,.0f}", "loss")
-                        close_trade(obj, "Stop Loss")
-                    elif unrealized >= TARGET:
-                        add_log(f"Target hit! ₹{unrealized:,.0f}", "profit")
-                        close_trade(obj, "Target")
+                    if ltp <= pos["sl_price"]:
+                         add_log(f"Stop loss hit! LTP ₹{ltp:.2f} | P&L ₹{unrealized:,.0f}", "loss")
+                         close_trade(obj, "Stop Loss")
+                    elif ltp >= pos["tgt_price"]:
+                         add_log(f"Target hit! LTP ₹{ltp:.2f} | P&L ₹{unrealized:,.0f}", "profit")
+                         close_trade(obj, "Target")
                     elif (pos["type"] == "CE" and signal == "SELL") or \
                          (pos["type"] == "PE" and signal == "BUY"):
                         close_trade(obj, f"Signal flip → {signal}")

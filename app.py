@@ -139,11 +139,17 @@ def on_data(wsapp, message):
     try:
         if not isinstance(message, dict):
             return
-        ltp    = message.get("last_traded_price", 0) / 100.0
-        volume = message.get("volume_trade_for_the_day", 0)
+       # print first tick to see raw values
+        if state["tick_count"] == 0:
+            add_log(f"Raw tick: {message}", "info")
+
+        raw    = message.get("last_traded_price", 0)
+        ltp    = raw / 100.0 if raw > 100000 else float(raw)
+        volume = message.get("volume_trade_for_the_day",
+                 message.get("vol_traded_today",
+                 message.get("volume", 0)))
         if ltp <= 0:
             return
-
         now = datetime.now(IST).replace(tzinfo=None)
         tick = {"price": ltp, "volume": volume, "time": now}
         tick_buffer.append(tick)

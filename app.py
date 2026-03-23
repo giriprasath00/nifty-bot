@@ -196,6 +196,8 @@ def compute_micro_average():
     }
     micro_buffer.append(micro)
     state["micro_count"] += 1
+    adx = calc_adx()
+    state["adx_value"] = adx
 
 # ═══════════════════════════════════════
 #   VWAP CALCULATION
@@ -346,7 +348,7 @@ def compute_signal_and_trade():
         state["sell_votes"] = sell_votes
 
         # ADX filter — only trade in trending market
-        trend_strong = adx >= 15
+        trend_strong = adx >= 25
 
         if buy_votes >= 2 and trend_strong:
             signal = "BUY"

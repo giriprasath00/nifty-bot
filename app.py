@@ -323,12 +323,7 @@ def compute_signal_and_trade():
 
         state["market_open"] = True
 
-        # check trading session
-        h, m = now.hour, now.minute
-        t = h * 60 + m
-        in_s1 = (9*60+30) <= t <= (11*60+30)
-        in_s2 = (13*60+30) <= t <= (15*60+0)
-        state["in_session"] = in_s1 or in_s2
+        state["in_session"] = True
 
         if len(micro_buffer) < 5:
             state["signal"] = "HOLD"
@@ -375,10 +370,8 @@ def compute_signal_and_trade():
         price = state["nifty_price"]
 
         if pos is None:
-            if signal in ("BUY", "SELL") and state["in_session"]:
-                open_trade(obj, signal, price, reason)
-            elif signal in ("BUY", "SELL") and not state["in_session"]:
-                add_log(f"Signal {signal} ignored — outside session", "info")
+           if signal in ("BUY", "SELL"):
+               open_trade(obj, signal, price, reason)
         else:
             ltp = get_option_ltp(obj, pos["symbol"])
             if ltp:
@@ -391,10 +384,8 @@ def compute_signal_and_trade():
                 elif (pos["type"] == "CE" and signal == "SELL") or \
                      (pos["type"] == "PE" and signal == "BUY"):
                     close_trade(obj, f"Signal flip → {signal}")
-                # force close at session end
-                if (h == 11 and m >= 28) or (h == 14 and m >= 58):
-                    close_trade(obj, "Session End")
-
+               
+                 
     except Exception as e:
         add_log(f"Signal compute error: {e}", "error")
 

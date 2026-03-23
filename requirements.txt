@@ -5,3 +5,4 @@ pandas
 websocket-client
 logzero
 pytz
+requests

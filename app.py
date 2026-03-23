@@ -735,7 +735,7 @@ td{padding:6px 7px;border-bottom:1px solid #2a385025;color:#cbd5e1}
     <div style="display:flex;gap:16px;margin-top:10px;font-size:11px;flex-wrap:wrap">
       <span>Support: <span class="g" id="sup">—</span></span>
       <span>Resistance: <span class="r" id="res">—</span></span>
-      <span>ADX: <span class="y" id="adx2">—</span> <span style="color:#64748b">(≥15 = trending)</span></span>
+      <span>ADX: <span class="y" id="adx2">—</span> <span style="color:#64748b">(≥25 = trending)</span></span>
     </div>
   </div>
 

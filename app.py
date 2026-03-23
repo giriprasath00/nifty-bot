@@ -276,7 +276,7 @@ def get_nearest_expiry():
     return expiry.strftime("%d%b%y").upper()
 
 def get_option_symbol(price, signal):
-    strike = round(price / 50) * 50
+    strike = round(price / 100) * 100
     otype  = "CE" if signal == "BUY" else "PE"
     return f"NIFTY{get_nearest_expiry()}{strike}{otype}"
 

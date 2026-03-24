@@ -506,9 +506,9 @@ def bot_loop():
                 state["market_open"]  = False
                 state["ws_connected"] = False
                 state["signal"]       = "MARKET CLOSED"
-                state["reason"]       = "Mon–Fri 9:00 AM – 3:30 PM IST"
+                state["reason"]       = "Mon–Fri 9:15 AM – 3:20 PM IST"
                 state["last_update"]  = now.strftime("%H:%M:%S")
-                add_log("Market closed — WebSocket will connect at 9:00 AM", "info")
+                add_log("Market closed — WebSocket will connect at 9:15 AM", "info")
                 time.sleep(60)
                 continue
 
@@ -546,7 +546,7 @@ def bot_loop():
             # keep alive until market closes
             while True:
                 now = datetime.now(IST).replace(tzinfo=None)
-                if now > now.replace(hour=15, minute=30, second=0):
+                if now > now.replace(hour=15, minute=20, second=0):
                     ws.close_connection()
                     if state["position"]:
                         close_trade(obj, "Market Close")

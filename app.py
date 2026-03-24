@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify, render_template_string, request
 from SmartApi import SmartConnect
 from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 import pyotp, pandas as pd, threading, time, os, requests, json
@@ -28,18 +28,17 @@ TARGET_PCT       = 0.45
 CAPITAL_USE_PCT  = 0.80
 NIFTY_TOKEN      = "99926000"
 NIFTY_EXCH       = "NSE"
-NIFTY_EXCH_TYPE  = 1        # 1 = NSE for WebSocket
+NIFTY_EXCH_TYPE  = 1
 
-# Trading sessions IST
 SESSION_1 = ((9, 30), (11, 30))
 SESSION_2 = ((13, 30), (15, 0))
 
 # ═══════════════════════════════════════
 #   TICK BUFFERS
 # ═══════════════════════════════════════
-tick_buffer    = deque(maxlen=15)    # 1-sec ticks → 15 sec window
-micro_buffer   = deque(maxlen=12)    # 15-sec avgs → 3 min window
-hist_buffer    = deque(maxlen=500)   # long history for S&R + ADX
+tick_buffer    = deque(maxlen=15)
+micro_buffer   = deque(maxlen=12)
+hist_buffer    = deque(maxlen=500)
 
 last_micro_time  = [time.time()]
 last_signal_time = [time.time()]
@@ -78,6 +77,9 @@ state = {
     "tick_count"   : 0,
     "micro_count"  : 0,
     "vol_ratio"    : 0.0,
+    # ── new manual / bot control fields ──
+    "bot_paused"   : False,
+    "trade_source" : "auto",   # "auto" or "manual"
 }
 
 def add_log(msg, level="info"):
@@ -139,7 +141,6 @@ def on_data(wsapp, message):
     try:
         if not isinstance(message, dict):
             return
-       # print first tick to see raw values
         if state["tick_count"] == 0:
             add_log(f"Raw tick: {message}", "info")
 
@@ -159,12 +160,10 @@ def on_data(wsapp, message):
         state["tick_count"]  += 1
         state["last_update"]  = now.strftime("%H:%M:%S")
 
-        # every 15 seconds → compute micro average
         if time.time() - last_micro_time[0] >= 15:
             compute_micro_average()
             last_micro_time[0] = time.time()
 
-        # every 3 minutes → compute signal and trade
         if time.time() - last_signal_time[0] >= 180:
             compute_signal_and_trade()
             last_signal_time[0] = time.time()
@@ -213,7 +212,6 @@ def calc_vwap():
         return 0.0
     prices  = np.array([t["price"]  for t in hist_buffer])
     volumes = np.array([t["volume"] for t in hist_buffer])
-    # avoid division by zero
     total_vol = np.sum(volumes)
     if total_vol == 0:
         return float(np.mean(prices))
@@ -221,7 +219,7 @@ def calc_vwap():
     return round(float(vwap), 2)
 
 # ═══════════════════════════════════════
-#   ADX CALCULATION (trend strength)
+#   ADX CALCULATION
 # ═══════════════════════════════════════
 def calc_adx(period=14):
     if len(micro_buffer) < period + 1:
@@ -313,13 +311,17 @@ def calc_sr_signal():
     return "SELL"
 
 # ═══════════════════════════════════════
-#   COMBINED SIGNAL (2 out of 3 + ADX filter)
+#   COMBINED SIGNAL (2/3 + ADX filter)
 # ═══════════════════════════════════════
 def compute_signal_and_trade():
     try:
-        now = datetime.now(IST).replace(tzinfo=None)
+        # skip auto-trade if bot is paused
+        if state["bot_paused"]:
+            state["signal"] = "BOT PAUSED"
+            state["reason"] = "Manual mode active — resume bot to enable auto-trading"
+            return
 
-        # check market hours
+        now = datetime.now(IST).replace(tzinfo=None)
         market_open  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
         market_close = now.replace(hour=15, minute=20, second=0, microsecond=0)
         if not (market_open <= now <= market_close) or now.weekday() >= 5:
@@ -328,15 +330,13 @@ def compute_signal_and_trade():
             return
 
         state["market_open"] = True
-
-        state["in_session"] = True
+        state["in_session"]  = True
 
         if len(micro_buffer) < 5:
             state["signal"] = "HOLD"
             state["reason"] = f"Building data... {len(micro_buffer)}/12 micro candles"
             return
 
-        # calculate all signals
         _, _, ema_s  = calc_ema_micro()
         vwap_s       = calc_vwap_signal()
         sr_s         = calc_sr_signal()
@@ -348,7 +348,6 @@ def compute_signal_and_trade():
         state["buy_votes"]  = buy_votes
         state["sell_votes"] = sell_votes
 
-        # ADX filter — only trade in trending market
         trend_strong = adx >= 25
 
         if buy_votes >= 2 and trend_strong:
@@ -359,7 +358,7 @@ def compute_signal_and_trade():
             reason = f"{sell_votes}/3 agree SELL | ADX {adx:.1f}"
         elif not trend_strong:
             signal = "HOLD"
-            reason = f"Choppy market — ADX {adx:.1f} < 15 (need trend)"
+            reason = f"Choppy market — ADX {adx:.1f} < 25 (need trend)"
         else:
             signal = "HOLD"
             reason = f"No consensus | BUY {buy_votes}/3 SELL {sell_votes}/3"
@@ -367,31 +366,32 @@ def compute_signal_and_trade():
         state["signal"] = signal
         state["reason"] = reason
 
-        # execute trade
         obj = _obj[0]
         if obj is None:
             return
 
-        pos = state["position"]
+        pos   = state["position"]
         price = state["nifty_price"]
 
+        # only auto-open if no position exists
         if pos is None:
-           if signal in ("BUY", "SELL"):
-               open_trade(obj, signal, price, reason)
+            if signal in ("BUY", "SELL"):
+                open_trade(obj, signal, price, reason, source="auto")
         else:
-            ltp = get_option_ltp(obj, pos["symbol"])
-            if ltp:
-                if ltp <= pos["sl_price"]:
-                    add_log(f"Stop loss hit! ₹{ltp:.2f}", "loss")
-                    close_trade(obj, "Stop Loss")
-                elif ltp >= pos["tgt_price"]:
-                    add_log(f"Target hit! ₹{ltp:.2f}", "profit")
-                    close_trade(obj, "Target")
-                elif (pos["type"] == "CE" and signal == "SELL") or \
-                     (pos["type"] == "PE" and signal == "BUY"):
-                    close_trade(obj, f"Signal flip → {signal}")
-               
-                 
+            # only manage auto-opened positions automatically
+            if state["trade_source"] == "auto":
+                ltp = get_option_ltp(obj, pos["symbol"])
+                if ltp:
+                    if ltp <= pos["sl_price"]:
+                        add_log(f"Stop loss hit! ₹{ltp:.2f}", "loss")
+                        close_trade(obj, "Stop Loss")
+                    elif ltp >= pos["tgt_price"]:
+                        add_log(f"Target hit! ₹{ltp:.2f}", "profit")
+                        close_trade(obj, "Target")
+                    elif (pos["type"] == "CE" and signal == "SELL") or \
+                         (pos["type"] == "PE" and signal == "BUY"):
+                        close_trade(obj, f"Signal flip → {signal}")
+
     except Exception as e:
         add_log(f"Signal compute error: {e}", "error")
 
@@ -406,8 +406,8 @@ def get_nearest_expiry():
     expiry = today + timedelta(days=days_ahead)
     return expiry.strftime("%d%b%y").upper()
 
-def get_option_symbol(price, signal):
-    strike = round(price / 50) * 50
+def get_option_symbol(price, signal, strike_override=None):
+    strike = strike_override if strike_override else round(price / 50) * 50
     otype  = "CE" if signal == "BUY" else "PE"
     return f"NIFTY{get_nearest_expiry()}{strike}{otype}"
 
@@ -424,23 +424,32 @@ def get_option_ltp(obj, symbol):
         pass
     return None
 
-def open_trade(obj, signal, price, reason):
-    symbol = get_option_symbol(price, signal)
+def open_trade(obj, signal, price, reason, source="auto", strike_override=None, lots_override=None):
+    symbol = get_option_symbol(price, signal, strike_override)
     ltp    = get_option_ltp(obj, symbol)
     if ltp is None:
         add_log(f"LTP not found: {symbol}", "error")
-        return
-    max_spend = state["balance"] * CAPITAL_USE_PCT
-    lots      = max(1, int(max_spend / (ltp * LOT_SIZE)))
-    qty       = lots * LOT_SIZE
-    cost      = ltp * qty
+        return False, f"LTP not found for {symbol}"
+
+    if lots_override:
+        lots = lots_override
+    else:
+        max_spend = state["balance"] * CAPITAL_USE_PCT
+        lots      = max(1, int(max_spend / (ltp * LOT_SIZE)))
+
+    qty  = lots * LOT_SIZE
+    cost = ltp * qty
+
     if cost > state["balance"]:
         add_log("Insufficient balance!", "error")
-        return
+        return False, "Insufficient balance"
+
     sl_price  = round(ltp * (1 - STOP_LOSS_PCT), 2)
     tgt_price = round(ltp * (1 + TARGET_PCT),    2)
-    state["balance"]  -= cost
-    state["position"]  = {
+
+    state["balance"]      -= cost
+    state["trade_source"]  = source
+    state["position"]      = {
         "symbol"      : symbol,
         "type"        : "CE" if signal == "BUY" else "PE",
         "signal"      : signal,
@@ -453,22 +462,26 @@ def open_trade(obj, signal, price, reason):
         "tgt_price"   : tgt_price,
         "reason"      : reason,
         "entry_time"  : datetime.now(IST).strftime("%H:%M:%S"),
+        "source"      : source,
     }
-    add_log(f"{'BUY' if signal=='BUY' else 'SELL'} {symbol} @ ₹{ltp:.2f} | {lots} lots | SL ₹{sl_price} | TGT ₹{tgt_price}", "buy" if signal=="BUY" else "sell")
+    tag = "🤖 AUTO" if source == "auto" else "🖐 MANUAL"
+    add_log(f"{tag} {'BUY CE' if signal=='BUY' else 'BUY PE'} {symbol} @ ₹{ltp:.2f} | {lots} lots | SL ₹{sl_price} | TGT ₹{tgt_price}", "buy" if signal=="BUY" else "sell")
+    return True, f"Opened {symbol} @ ₹{ltp:.2f}"
 
 def close_trade(obj, reason="Signal"):
     pos = state["position"]
     if not pos:
-        return
+        return False, "No open position"
     ltp = get_option_ltp(obj, pos["symbol"])
     if ltp is None:
         add_log("Cannot close — LTP unavailable", "error")
-        return
+        return False, "LTP unavailable"
     qty = pos.get("qty", LOT_SIZE)
     pnl = (ltp - pos["entry_price"]) * qty
-    state["balance"]   += ltp * qty
-    state["total_pnl"] += pnl
-    state["position"]   = None
+    state["balance"]      += ltp * qty
+    state["total_pnl"]    += pnl
+    state["position"]      = None
+    state["trade_source"]  = "auto"
     if pnl >= 0: state["wins"]   += 1
     else:        state["losses"] += 1
     state["trades"].insert(0, {
@@ -480,15 +493,16 @@ def close_trade(obj, reason="Signal"):
         "entry_time" : pos["entry_time"],
         "exit_time"  : datetime.now(IST).strftime("%H:%M:%S"),
         "reason"     : reason,
+        "source"     : pos.get("source", "auto"),
     })
     add_log(f"EXIT {pos['symbol']} @ ₹{ltp:.2f} | P&L {'+' if pnl>=0 else ''}₹{pnl:,.0f} ({reason})", "profit" if pnl>=0 else "loss")
+    return True, f"Closed @ ₹{ltp:.2f} | P&L ₹{pnl:,.0f}"
 
 # ═══════════════════════════════════════
 #   WEBSOCKET BOT LOOP
 # ═══════════════════════════════════════
 def bot_loop():
     add_log("NSEAlgo v4 — WebSocket starting...", "info")
-
     obj = connect_angel()
     if obj is None:
         add_log("Cannot start — login failed", "error")
@@ -498,7 +512,7 @@ def bot_loop():
     while True:
         try:
             now = datetime.now(IST).replace(tzinfo=None)
-            market_open  = now.replace(hour=9,  minute=15,  second=0, microsecond=0)
+            market_open  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
             market_close = now.replace(hour=15, minute=20, second=0, microsecond=0)
             is_weekend   = now.weekday() >= 5
 
@@ -515,35 +529,31 @@ def bot_loop():
             state["market_open"] = True
             add_log("Market open — connecting WebSocket...", "info")
 
-            # reconnect Angel One session (token expires daily)
             obj = connect_angel()
             if obj is None:
                 time.sleep(30)
                 continue
 
-            # start WebSocket
             ws = SmartWebSocketV2(
                 _auth_token[0],
                 API_KEY.strip(),
                 CLIENT_CODE.strip(),
                 _feed_token[0]
             )
-            ws.on_open    = on_open
-            ws.on_data    = on_data
-            ws.on_error   = on_error
-            ws.on_close   = on_close
+            ws.on_open  = on_open
+            ws.on_data  = on_data
+            ws.on_error = on_error
+            ws.on_close = on_close
 
-            # subscribe to NIFTY 50 index
             token_list = [{"exchangeType": NIFTY_EXCH_TYPE, "tokens": [NIFTY_TOKEN]}]
 
             def run_ws():
                 ws.connect()
-                ws.subscribe("abc123", 3, token_list)  # mode 3 = full data with volume
+                ws.subscribe("abc123", 3, token_list)
 
             ws_thread = threading.Thread(target=run_ws, daemon=True)
             ws_thread.start()
 
-            # keep alive until market closes
             while True:
                 now = datetime.now(IST).replace(tzinfo=None)
                 if now > now.replace(hour=15, minute=20, second=0):
@@ -558,7 +568,7 @@ def bot_loop():
             time.sleep(30)
 
 # ═══════════════════════════════════════
-#   API
+#   API — STATE
 # ═══════════════════════════════════════
 @app.route("/api/state")
 def api_state():
@@ -598,7 +608,91 @@ def api_state():
         "capital"      : CAPITAL,
         "sl_price"     : round(pos["sl_price"],  2) if pos else 0,
         "tgt_price"    : round(pos["tgt_price"], 2) if pos else 0,
+        "bot_paused"   : state["bot_paused"],
+        "trade_source" : state["trade_source"],
     })
+
+# ═══════════════════════════════════════
+#   API — BOT TOGGLE
+# ═══════════════════════════════════════
+@app.route("/api/bot/toggle", methods=["POST"])
+def api_bot_toggle():
+    state["bot_paused"] = not state["bot_paused"]
+    status = "PAUSED" if state["bot_paused"] else "RESUMED"
+    add_log(f"Bot {status} by user", "info")
+    return jsonify({"ok": True, "bot_paused": state["bot_paused"], "message": f"Bot {status}"})
+
+# ═══════════════════════════════════════
+#   API — MANUAL BUY CE
+# ═══════════════════════════════════════
+@app.route("/api/manual/buy_ce", methods=["POST"])
+def api_manual_buy_ce():
+    obj = _obj[0]
+    if obj is None:
+        return jsonify({"ok": False, "message": "Not connected to Angel One"})
+    if state["position"]:
+        return jsonify({"ok": False, "message": "A position is already open — close it first"})
+
+    data   = request.get_json(silent=True) or {}
+    strike = data.get("strike")
+    lots   = data.get("lots")
+    price  = state["nifty_price"]
+
+    if not price:
+        return jsonify({"ok": False, "message": "No live price available"})
+
+    try:
+        strike = int(strike) if strike else None
+        lots   = int(lots)   if lots   else None
+    except:
+        return jsonify({"ok": False, "message": "Invalid strike or lots"})
+
+    ok, msg = open_trade(obj, "BUY", price, "Manual CE buy", source="manual",
+                         strike_override=strike, lots_override=lots)
+    return jsonify({"ok": ok, "message": msg})
+
+# ═══════════════════════════════════════
+#   API — MANUAL BUY PE
+# ═══════════════════════════════════════
+@app.route("/api/manual/buy_pe", methods=["POST"])
+def api_manual_buy_pe():
+    obj = _obj[0]
+    if obj is None:
+        return jsonify({"ok": False, "message": "Not connected to Angel One"})
+    if state["position"]:
+        return jsonify({"ok": False, "message": "A position is already open — close it first"})
+
+    data   = request.get_json(silent=True) or {}
+    strike = data.get("strike")
+    lots   = data.get("lots")
+    price  = state["nifty_price"]
+
+    if not price:
+        return jsonify({"ok": False, "message": "No live price available"})
+
+    try:
+        strike = int(strike) if strike else None
+        lots   = int(lots)   if lots   else None
+    except:
+        return jsonify({"ok": False, "message": "Invalid strike or lots"})
+
+    ok, msg = open_trade(obj, "SELL", price, "Manual PE buy", source="manual",
+                         strike_override=strike, lots_override=lots)
+    return jsonify({"ok": ok, "message": msg})
+
+# ═══════════════════════════════════════
+#   API — MANUAL CLOSE
+# ═══════════════════════════════════════
+@app.route("/api/manual/close", methods=["POST"])
+def api_manual_close():
+    obj = _obj[0]
+    if obj is None:
+        return jsonify({"ok": False, "message": "Not connected to Angel One"})
+    if not state["position"]:
+        return jsonify({"ok": False, "message": "No open position to close"})
+
+    ok, msg = close_trade(obj, "Manual close")
+    return jsonify({"ok": ok, "message": msg})
 
 # ═══════════════════════════════════════
 #   DASHBOARD
@@ -613,15 +707,14 @@ HTML = """<!DOCTYPE html>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#07090f;color:#e2e8f0;font-family:'JetBrains Mono',monospace;min-height:100vh;font-size:13px}
-.hdr{background:#0f1520;border-bottom:1px solid #2a3850;padding:11px 18px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:9}
+.hdr{background:#0f1520;border-bottom:1px solid #2a3850;padding:11px 18px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:9;gap:8px;flex-wrap:wrap}
 .logo{font-family:'Sora',sans-serif;font-size:15px;font-weight:700;color:#fff}.logo em{color:#f97316;font-style:normal}
 .live{width:7px;height:7px;border-radius:50%;background:#22c55e;display:inline-block;animation:blink 1.1s infinite;margin-right:5px}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
 .upd{font-size:10px;color:#94a3b8;padding:2px 9px;background:#0f151e;border-radius:99px;border:1px solid #2a3850}
-.wrap{max-width:960px;margin:0 auto;padding:14px 14px 40px}
+.wrap{max-width:980px;margin:0 auto;padding:14px 14px 40px}
 .g2{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-bottom:11px}
 .g4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:11px}
-.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:11px}
 .card{background:#0f1520;border:1px solid #2a3850;border-radius:10px;padding:13px 15px}
 .ct{font-size:9px;color:#94a3b8;letter-spacing:.12em;text-transform:uppercase;margin-bottom:7px}
 .big{font-family:'Sora',sans-serif;font-size:24px;font-weight:700;color:#fff;letter-spacing:-.02em}
@@ -632,7 +725,9 @@ body{background:#07090f;color:#e2e8f0;font-family:'JetBrains Mono',monospace;min
 .ssell{background:#f43f5e20;color:#fb7185;border:1px solid #f43f5e50}
 .shold{background:#ffffff10;color:#94a3b8;border:1px solid #ffffff18}
 .sclosed{background:#fbbf2420;color:#fcd34d;border:1px solid #fbbf2450}
+.spaused{background:#a78bfa20;color:#c4b5fd;border:1px solid #a78bfa50}
 .pcard{border:1px solid #f9731650;background:#f9731608}
+.pcard-manual{border:1px solid #a78bfa60;background:#a78bfa08}
 .srow{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #2a385040;font-size:11px}
 .srow:last-child{border-bottom:none}
 .vote{flex:1;padding:7px;border-radius:5px;text-align:center;font-size:11px;font-weight:700}
@@ -653,17 +748,50 @@ td{padding:6px 7px;border-bottom:1px solid #2a385025;color:#cbd5e1}
 .pill-g{background:#22c55e20;color:#4ade80;border:1px solid #22c55e30}
 .pill-r{background:#f43f5e20;color:#fb7185;border:1px solid #f43f5e30}
 .pill-y{background:#fbbf2420;color:#fcd34d;border:1px solid #fbbf2430}
-.pill-b{background:#3b82f620;color:#93c5fd;border:1px solid #3b82f630}
-@media(max-width:600px){.g4{grid-template-columns:1fr 1fr}.g3{grid-template-columns:1fr}.g2{grid-template-columns:1fr}.big{font-size:19px}}
+.pill-pu{background:#a78bfa20;color:#c4b5fd;border:1px solid #a78bfa30}
+
+/* ── Manual Trade Panel ── */
+.manual-panel{background:#0d1219;border:1px solid #a78bfa40;border-radius:12px;padding:16px 18px;margin-bottom:11px}
+.manual-title{font-size:9px;color:#a78bfa;letter-spacing:.14em;text-transform:uppercase;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.manual-title::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,#a78bfa30,transparent)}
+.manual-row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.inp-group{display:flex;flex-direction:column;gap:4px}
+.inp-label{font-size:9px;color:#64748b;letter-spacing:.1em;text-transform:uppercase}
+.inp{background:#07090f;border:1px solid #2a3850;border-radius:6px;padding:7px 10px;color:#e2e8f0;font-family:'JetBrains Mono',monospace;font-size:12px;width:110px;outline:none;transition:border-color .2s}
+.inp:focus{border-color:#a78bfa60}
+.inp::placeholder{color:#334155}
+.btn{padding:8px 16px;border-radius:7px;border:none;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;cursor:pointer;transition:all .15s;letter-spacing:.04em;white-space:nowrap}
+.btn:active{transform:scale(.97)}
+.btn:disabled{opacity:.35;cursor:not-allowed;transform:none}
+.btn-ce{background:#22c55e18;color:#4ade80;border:1px solid #22c55e50}
+.btn-ce:hover:not(:disabled){background:#22c55e30;border-color:#22c55e90;box-shadow:0 0 12px #22c55e20}
+.btn-pe{background:#f43f5e18;color:#fb7185;border:1px solid #f43f5e50}
+.btn-pe:hover:not(:disabled){background:#f43f5e30;border-color:#f43f5e90;box-shadow:0 0 12px #f43f5e20}
+.btn-close-pos{background:#f9731618;color:#fb923c;border:1px solid #f9731650}
+.btn-close-pos:hover:not(:disabled){background:#f9731630;border-color:#f9731690;box-shadow:0 0 12px #f9731620}
+.btn-toggle-pause{background:#a78bfa18;color:#c4b5fd;border:1px solid #a78bfa50;font-size:11px;padding:6px 14px;border-radius:7px;font-family:'JetBrains Mono',monospace;font-weight:700;cursor:pointer;transition:all .15s}
+.btn-toggle-pause:hover{background:#a78bfa30;border-color:#a78bfa80}
+.btn-toggle-resume{background:#22c55e18;color:#4ade80;border:1px solid #22c55e50;font-size:11px;padding:6px 14px;border-radius:7px;font-family:'JetBrains Mono',monospace;font-weight:700;cursor:pointer;transition:all .15s}
+.btn-toggle-resume:hover{background:#22c55e30}
+.manual-hint{font-size:10px;color:#475569;margin-top:10px;line-height:1.5}
+.toast{position:fixed;bottom:24px;right:24px;padding:10px 18px;border-radius:8px;font-size:12px;font-weight:600;z-index:9999;opacity:0;transform:translateY(8px);transition:all .25s;pointer-events:none;max-width:320px;line-height:1.4}
+.toast.show{opacity:1;transform:translateY(0)}
+.toast-ok{background:#22c55e20;color:#4ade80;border:1px solid #22c55e50}
+.toast-err{background:#f43f5e20;color:#fb7185;border:1px solid #f43f5e50}
+.source-badge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:9px;font-weight:700;letter-spacing:.06em;margin-left:6px;vertical-align:middle}
+.src-auto{background:#3b82f620;color:#93c5fd;border:1px solid #3b82f630}
+.src-manual{background:#a78bfa20;color:#c4b5fd;border:1px solid #a78bfa40}
+@media(max-width:640px){.g4{grid-template-columns:1fr 1fr}.g2{grid-template-columns:1fr}.big{font-size:19px}.manual-row{flex-direction:column}.inp{width:100%}}
 </style>
 </head>
 <body>
 <div class="hdr">
   <div class="logo"><em>NSE</em>Algo <span style="font-size:10px;font-weight:400;color:#64748b;margin-left:6px">v4 · WebSocket · NIFTY F&O</span></div>
-  <div style="display:flex;align-items:center;gap:8px">
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
     <span id="li" style="font-size:10px;color:#64748b">Connecting...</span>
     <span id="ws" class="pill pill-r">WS Off</span>
     <span id="sess" class="pill pill-y" style="display:none">—</span>
+    <button id="bot-toggle" class="btn-toggle-pause" onclick="toggleBot()">⏸ Pause Bot</button>
     <span class="upd" id="upd">—</span>
   </div>
 </div>
@@ -723,6 +851,27 @@ td{padding:6px 7px;border-bottom:1px solid #2a385025;color:#cbd5e1}
     </div>
   </div>
 
+  <!-- ─── MANUAL TRADE PANEL ─── -->
+  <div class="manual-panel">
+    <div class="manual-title">🖐 Manual Trading</div>
+    <div class="manual-row">
+      <div class="inp-group">
+        <div class="inp-label">Strike Price (optional)</div>
+        <input class="inp" id="m-strike" type="number" placeholder="e.g. 24500" step="50">
+      </div>
+      <div class="inp-group">
+        <div class="inp-label">Lots</div>
+        <input class="inp" id="m-lots" type="number" placeholder="e.g. 2" min="1" style="width:80px">
+      </div>
+      <button class="btn btn-ce"  id="btn-ce"    onclick="manualBuyCE()">▲ Buy CE (CALL)</button>
+      <button class="btn btn-pe"  id="btn-pe"    onclick="manualBuyPE()">▼ Buy PE (PUT)</button>
+      <button class="btn btn-close-pos" id="btn-close-pos" onclick="manualClose()" disabled>✕ Close Position</button>
+    </div>
+    <div class="manual-hint" id="m-hint">
+      Leave strike blank to use ATM (nearest ₹50 strike). Leave lots blank to use 80% of available capital.
+    </div>
+  </div>
+
   <!-- Strategy Breakdown -->
   <div class="card" style="margin-bottom:11px">
     <div class="ct">Strategy breakdown — 3 signals voting every 3 minutes</div>
@@ -747,11 +896,14 @@ td{padding:6px 7px;border-bottom:1px solid #2a385025;color:#cbd5e1}
 
   <!-- Open Position -->
   <div class="card pcard" id="pc" style="margin-bottom:11px;display:none">
-    <div class="ct">📂 Open position</div>
+    <div class="ct" id="pc-title">📂 Open position</div>
     <div id="pg" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:4px"></div>
+    <div style="margin-top:12px;padding-top:10px;border-top:1px solid #2a385040;display:flex;justify-content:flex-end">
+      <button class="btn btn-close-pos" onclick="manualClose()">✕ Close Position Now</button>
+    </div>
   </div>
   <div class="card" id="npc" style="margin-bottom:11px;text-align:center;padding:14px">
-    <div style="font-size:11px;color:#64748b">📂 No open position — signal checked every 3 mins during session</div>
+    <div style="font-size:11px;color:#64748b">📂 No open position — use manual buttons above or wait for auto signal</div>
   </div>
 
   <!-- Trade history + Log -->
@@ -760,7 +912,7 @@ td{padding:6px 7px;border-bottom:1px solid #2a385025;color:#cbd5e1}
       <div class="ct">Trade history</div>
       <div id="te" style="font-size:11px;color:#64748b;padding:8px 0">No trades yet today</div>
       <table id="tt" style="display:none">
-        <thead><tr><th>Symbol</th><th>Lots</th><th>P&L</th><th>Reason</th><th>Time</th></tr></thead>
+        <thead><tr><th>Symbol</th><th>Lots</th><th>P&L</th><th>Src</th><th>Reason</th><th>Time</th></tr></thead>
         <tbody id="tb"></tbody>
       </table>
     </div>
@@ -772,27 +924,98 @@ td{padding:6px 7px;border-bottom:1px solid #2a385025;color:#cbd5e1}
 
 </div>
 
+<!-- Toast notification -->
+<div class="toast" id="toast"></div>
+
 <script>
 const fi = n => new Intl.NumberFormat('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}).format(n);
+
+function showToast(msg, ok=true){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + (ok ? 'toast-ok' : 'toast-err');
+  clearTimeout(t._tid);
+  t._tid = setTimeout(() => t.className = 'toast', 3500);
+}
+
+async function apiFetch(url, body=null){
+  const opts = {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body||{})};
+  const r = await fetch(url, opts);
+  return r.json();
+}
+
+async function toggleBot(){
+  const d = await apiFetch('/api/bot/toggle');
+  showToast(d.message, true);
+}
+
+async function manualBuyCE(){
+  const strike = document.getElementById('m-strike').value;
+  const lots   = document.getElementById('m-lots').value;
+  const body   = {};
+  if(strike) body.strike = parseInt(strike);
+  if(lots)   body.lots   = parseInt(lots);
+  setBtnsLoading(true);
+  const d = await apiFetch('/api/manual/buy_ce', body);
+  showToast(d.message, d.ok);
+  setBtnsLoading(false);
+}
+
+async function manualBuyPE(){
+  const strike = document.getElementById('m-strike').value;
+  const lots   = document.getElementById('m-lots').value;
+  const body   = {};
+  if(strike) body.strike = parseInt(strike);
+  if(lots)   body.lots   = parseInt(lots);
+  setBtnsLoading(true);
+  const d = await apiFetch('/api/manual/buy_pe', body);
+  showToast(d.message, d.ok);
+  setBtnsLoading(false);
+}
+
+async function manualClose(){
+  if(!confirm('Close the current position at market price?')) return;
+  setBtnsLoading(true);
+  const d = await apiFetch('/api/manual/close');
+  showToast(d.message, d.ok);
+  setBtnsLoading(false);
+}
+
+function setBtnsLoading(loading){
+  document.getElementById('btn-ce').disabled        = loading;
+  document.getElementById('btn-pe').disabled        = loading;
+  document.getElementById('btn-close-pos').disabled = loading;
+}
 
 async function tick(){
   try{
     const d = await fetch('/api/state').then(r=>r.json());
+    const hasPos = !!d.position;
 
     document.getElementById('li').innerHTML = d.connected ? '<span class="live"></span>Live' : 'Connecting...';
     document.getElementById('upd').textContent = 'Updated ' + d.last_update;
 
     // WS badge
     const wsEl = document.getElementById('ws');
-    if(d.ws_connected){ wsEl.className='pill pill-g'; wsEl.textContent='WS Live'; }
-    else { wsEl.className='pill pill-r'; wsEl.textContent='WS Off'; }
+    wsEl.className = d.ws_connected ? 'pill pill-g' : 'pill pill-r';
+    wsEl.textContent = d.ws_connected ? 'WS Live' : 'WS Off';
 
     // session badge
     const sb2 = document.getElementById('sess');
-    sb2.style.display='inline-block';
+    sb2.style.display = 'inline-block';
     if(d.in_session){ sb2.className='pill pill-g'; sb2.textContent='✓ Session'; }
     else if(d.market_open){ sb2.className='pill pill-y'; sb2.textContent='Outside Session'; }
     else { sb2.className='pill pill-r'; sb2.textContent='Market Closed'; }
+
+    // bot toggle button
+    const btn = document.getElementById('bot-toggle');
+    if(d.bot_paused){
+      btn.className = 'btn-toggle-resume';
+      btn.textContent = '▶ Resume Bot';
+    } else {
+      btn.className = 'btn-toggle-pause';
+      btn.textContent = '⏸ Pause Bot';
+    }
 
     // price + indicators
     document.getElementById('np').textContent   = '₹' + fi(d.nifty_price);
@@ -800,14 +1023,17 @@ async function tick(){
     document.getElementById('e21').textContent  = d.ema21 || '—';
     document.getElementById('vwap').textContent = d.vwap  ? '₹'+fi(d.vwap) : '—';
     document.getElementById('adx').textContent  = d.adx   ? d.adx.toFixed(1) : '—';
-    document.getElementById('adx').style.color  = d.adx >= 15 ? '#4ade80' : '#fb7185';
+    document.getElementById('adx').style.color  = d.adx >= 25 ? '#4ade80' : '#fb7185';
     document.getElementById('tc').textContent   = d.tick_count  || 0;
     document.getElementById('mc').textContent   = d.micro_count || 0;
 
-    // signal
+    // signal badge
     const s = d.signal;
-    let sc='shold', ic='—';
-    if(s==='BUY'){sc='sbuy';ic='▲'} else if(s==='SELL'){sc='ssell';ic='▼'} else if(s==='MARKET CLOSED'){sc='sclosed';ic='💤'}
+    let sc = 'shold', ic = '—';
+    if(s==='BUY'){sc='sbuy';ic='▲';}
+    else if(s==='SELL'){sc='ssell';ic='▼';}
+    else if(s==='MARKET CLOSED'){sc='sclosed';ic='💤';}
+    else if(s==='BOT PAUSED'){sc='spaused';ic='⏸';}
     document.getElementById('sb').innerHTML = `<span class="sig ${sc}">${ic} ${s}</span>`;
     document.getElementById('sr').textContent = d.reason;
     document.getElementById('bv').textContent = '🟢 BUY ' + d.buy_votes + '/3';
@@ -817,7 +1043,7 @@ async function tick(){
     const pe = document.getElementById('pnl');
     pe.textContent = (d.total_pnl>=0?'+':'')+'₹'+fi(Math.abs(d.total_pnl));
     pe.className = 'big '+(d.total_pnl>=0?'g':'r');
-    pe.style.fontSize='18px';
+    pe.style.fontSize = '18px';
     document.getElementById('pnlp').textContent = (d.pnl_pct>=0?'+':'')+d.pnl_pct+'%';
     document.getElementById('pnlp').style.color = d.pnl_pct>=0?'#4ade80':'#fb7185';
     document.getElementById('bal').textContent  = '₹'+fi(d.balance);
@@ -826,57 +1052,78 @@ async function tick(){
     document.getElementById('wi').textContent   = d.wins;
     document.getElementById('lo').textContent   = d.losses;
 
-    // strategy
+    // strategy signals
     document.getElementById('ema-s').textContent  = d.ema_signal  || '—';
     document.getElementById('vwap-s').textContent = d.vwap_signal || '—';
     document.getElementById('sr-s').textContent   = d.sr_signal   || '—';
     document.getElementById('sup').textContent    = d.support    ? '₹'+fi(d.support)    : '—';
     document.getElementById('res').textContent    = d.resistance ? '₹'+fi(d.resistance) : '—';
     document.getElementById('adx2').textContent   = d.adx ? d.adx.toFixed(1) : '—';
-    document.getElementById('adx2').style.color   = d.adx >= 15 ? '#4ade80' : '#fb7185';
+    document.getElementById('adx2').style.color   = d.adx >= 25 ? '#4ade80' : '#fb7185';
 
-    // position
+    // manual button state
+    document.getElementById('btn-ce').disabled        = hasPos;
+    document.getElementById('btn-pe').disabled        = hasPos;
+    document.getElementById('btn-close-pos').disabled = !hasPos;
+
+    // hint
+    const hint = document.getElementById('m-hint');
+    if(hasPos){
+      hint.innerHTML = '<span style="color:#f97316">⚠ A position is open. Close it before placing a new trade.</span>';
+    } else if(d.bot_paused){
+      hint.innerHTML = '<span style="color:#c4b5fd">🖐 Bot paused. You are in full manual control.</span>';
+    } else {
+      hint.textContent = 'Leave strike blank to use ATM (nearest ₹50 strike). Leave lots blank to use 80% of available capital.';
+    }
+
+    // open position card
     if(d.position){
-      document.getElementById('pc').style.display='block';
-      document.getElementById('npc').style.display='none';
-      const p=d.position;
-      document.getElementById('pg').innerHTML=`
+      const p = d.position;
+      const isManual = p.source === 'manual';
+      const pcEl = document.getElementById('pc');
+      pcEl.style.display = 'block';
+      pcEl.className = 'card ' + (isManual ? 'pcard-manual' : 'pcard');
+      document.getElementById('npc').style.display = 'none';
+      const srcBadge = `<span class="source-badge ${isManual?'src-manual':'src-auto'}">${isManual?'🖐 MANUAL':'🤖 AUTO'}</span>`;
+      document.getElementById('pc-title').innerHTML = '📂 Open position' + srcBadge;
+      document.getElementById('pg').innerHTML = `
         <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">SYMBOL</div><div class="sm o">${p.symbol}</div></div>
         <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">ENTRY</div><div class="sm">₹${fi(p.entry_price)}</div></div>
-        <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">LOTS × 65</div><div class="sm">${p.lots} lots = ${p.qty} units</div></div>
+        <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">LOTS × ${p.qty/p.lots||65}</div><div class="sm">${p.lots} lots = ${p.qty} units</div></div>
         <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">STOP LOSS</div><div class="sm r">₹${fi(d.sl_price)}</div></div>
         <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">TARGET</div><div class="sm g">₹${fi(d.tgt_price)}</div></div>
         <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">ENTRY TIME</div><div class="sm">${p.entry_time}</div></div>`;
     } else {
-      document.getElementById('pc').style.display='none';
-      document.getElementById('npc').style.display='block';
+      document.getElementById('pc').style.display  = 'none';
+      document.getElementById('npc').style.display = 'block';
     }
 
-    // trades
-    if(d.trades.length>0){
-      document.getElementById('te').style.display='none';
-      document.getElementById('tt').style.display='table';
-      document.getElementById('tb').innerHTML=d.trades.map(t=>`
+    // trades table
+    if(d.trades.length > 0){
+      document.getElementById('te').style.display = 'none';
+      document.getElementById('tt').style.display = 'table';
+      document.getElementById('tb').innerHTML = d.trades.map(t => `
         <tr>
           <td class="o">${t.symbol}</td>
           <td>${t.lots||1}</td>
           <td class="${t.pnl>=0?'g':'r'}">${t.pnl>=0?'+':''}₹${fi(Math.abs(t.pnl))}</td>
+          <td><span class="source-badge ${t.source==='manual'?'src-manual':'src-auto'}">${t.source==='manual'?'🖐':'🤖'}</span></td>
           <td style="color:#94a3b8;font-size:10px">${t.reason}</td>
           <td style="color:#64748b">${t.entry_time}</td>
         </tr>`).join('');
     }
 
-    // log
-    document.getElementById('lc').innerHTML=d.log.map(l=>`
+    // activity log
+    document.getElementById('lc').innerHTML = d.log.map(l => `
       <div class="lr l${l.level}">
         <span style="color:#475569">${l.time} </span>${l.msg}
       </div>`).join('');
 
-  }catch(e){console.error(e)}
+  } catch(e){ console.error(e); }
 }
 
 tick();
-setInterval(tick, 3000);  // refresh every 3 seconds (faster for live data)
+setInterval(tick, 3000);
 </script>
 </body>
 </html>"""

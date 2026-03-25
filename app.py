@@ -2,7 +2,7 @@ from flask import Flask, jsonify, render_template_string, request
 from SmartApi import SmartConnect
 from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 import pyotp, pandas as pd, threading, time, os, requests, json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta,date
 from collections import deque
 import numpy as np
 import pytz
@@ -449,13 +449,40 @@ def compute_signal_and_trade():
 # ═══════════════════════════════════════
 def get_nearest_expiry():
     today = datetime.now(IST).replace(tzinfo=None)
-    weekday = today.weekday()   # Mon=0 Tue=1 ... Sun=6
-    days_to_tuesday = (1 - weekday) % 7
-    # On Tuesday after 12 PM roll to next week
-    if days_to_tuesday == 0 and today.hour >= 12:
-        days_to_tuesday = 7
-    expiry = today + timedelta(days=days_to_tuesday)
-    return expiry.strftime("%d%b%y").upper()
+    today_str = today.strftime("%d%b%y").upper()
+    
+    # Find all NIFTY expiries available in symbol master
+    expiry_dates = set()
+    for symbol in nfo_symbols:
+        if symbol.startswith("NIFTY") and ("CE" in symbol or "PE" in symbol):
+            # Extract expiry part (characters 5-12)
+            try:
+                exp = symbol[5:12]  # e.g. "30MAR26"
+                expiry_dates.add(exp)
+            except:
+                pass
+    
+    if not expiry_dates:
+        # fallback to simple calculation
+        days = (1 - today.weekday()) % 7 or 7
+        return (today + timedelta(days=days)).strftime("%d%b%y").upper()
+    
+    # Convert to dates and find nearest future expiry
+    from datetime import date
+    future = []
+    for e in expiry_dates:
+        try:
+            d = datetime.strptime(e, "%d%b%y")
+            if d.date() >= today.date():
+                future.append((d, e))
+        except:
+            pass
+    
+    if not future:
+        return min(expiry_dates)
+    
+    nearest = min(future, key=lambda x: x[0])
+    return nearest[1]
     
 def find_closest_symbol(price, otype):
     """Search symbol master for the closest available strike to price."""

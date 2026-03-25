@@ -724,7 +724,7 @@ def bot_loop():
 
             # Keep-alive: wait while market is open
             while is_market_hours():
-                time.sleep(10)
+                time.sleep(1)
                 secs_since_tick = time.time() - state["last_tick_time"]
                 # Dead if: WS flag dropped, OR connected but no tick for 60s (zombie)
                 ws_dead = (not state["ws_connected"]) or (secs_since_tick > 60)
@@ -789,6 +789,8 @@ def api_state():
         "capital"      : CAPITAL,
         "sl_price"     : round(pos["sl_price"],  2) if pos else 0,
         "tgt_price"    : round(pos["tgt_price"], 2) if pos else 0,
+        "unrealized"   : round((get_option_ltp(_obj[0], pos["symbol"]) or pos["entry_price"] - pos["entry_price"]) * pos["qty"], 2) if pos and _obj[0] else 0,
+        "current_ltp"  : get_option_ltp(_obj[0], pos["symbol"]) or 0 if pos and _obj[0] else 0,
         "bot_paused"   : state["bot_paused"],
         "trade_source" : state["trade_source"],
     })

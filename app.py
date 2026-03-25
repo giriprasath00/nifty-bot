@@ -107,6 +107,10 @@ def load_symbol_master():
             if item.get("exch_seg") == "NFO" and "NIFTY" in item.get("symbol", ""):
                 nfo_symbols[item["symbol"]] = item["token"]
         add_log(f"Loaded {len(nfo_symbols)} NIFTY NFO symbols ✓", "success")
+        # Log the expiry being used and a few sample symbols so we can verify format
+        expiry = get_nearest_expiry()
+        samples = [s for s in nfo_symbols if expiry in s][:6]
+        add_log(f"Target expiry: {expiry} | Samples: {samples}", "info")
     except Exception as e:
         add_log(f"Symbol master failed: {e}", "error")
 
@@ -447,17 +451,49 @@ def compute_signal_and_trade():
 #   OPTION FUNCTIONS
 # ═══════════════════════════════════════
 def get_nearest_expiry():
-    today      = datetime.now(IST).replace(tzinfo=None)
-    days_ahead = (3 - today.weekday()) % 7
-    if days_ahead == 0:
-        days_ahead = 7
-    expiry = today + timedelta(days=days_ahead)
+    """Returns the next weekly expiry date (Thursday) in DDMMMYY format.
+    If today IS Thursday and market is still open, use today's expiry.
+    Otherwise use next Thursday."""
+    today = datetime.now(IST).replace(tzinfo=None)
+    weekday = today.weekday()   # Mon=0 … Thu=3 … Sun=6
+    days_to_thursday = (3 - weekday) % 7
+    # If today is Thursday but after 3:30 PM, roll to next week
+    if days_to_thursday == 0 and today.hour >= 15 and today.minute >= 30:
+        days_to_thursday = 7
+    # If days_to_thursday == 0 we're on Thursday during market hours — use today
+    expiry = today + timedelta(days=days_to_thursday)
     return expiry.strftime("%d%b%y").upper()
 
+def find_closest_symbol(price, otype):
+    """Search symbol master for the closest available strike to price."""
+    expiry = get_nearest_expiry()
+    target_strike = round(price / 50) * 50
+    # Try ±500 in steps of 50
+    for offset in range(0, 600, 50):
+        for delta in ([0] if offset == 0 else [offset, -offset]):
+            strike = target_strike + delta
+            sym = f"NIFTY{expiry}{strike}{otype}"
+            if sym in nfo_symbols:
+                return sym, strike
+    # Fallback: log available NIFTY symbols for this expiry to help debug
+    sample = [s for s in nfo_symbols if expiry in s and otype in s][:5]
+    add_log(f"No symbol found near {target_strike} {otype} expiry={expiry}. Sample available: {sample}", "error")
+    return None, None
+
 def get_option_symbol(price, signal, strike_override=None):
-    strike = strike_override if strike_override else round(price / 50) * 50
-    otype  = "CE" if signal == "BUY" else "PE"
-    return f"NIFTY{get_nearest_expiry()}{strike}{otype}"
+    otype = "CE" if signal == "BUY" else "PE"
+    if strike_override:
+        sym = f"NIFTY{get_nearest_expiry()}{strike_override}{otype}"
+        if sym not in nfo_symbols:
+            add_log(f"Strike {strike_override} not in symbol master: {sym}", "error")
+            return sym   # return anyway, will fail at LTP fetch with clear error
+        return sym
+    sym, strike = find_closest_symbol(price, otype)
+    if sym is None:
+        # last resort — return the raw ATM symbol so error is visible
+        strike = round(price / 50) * 50
+        return f"NIFTY{get_nearest_expiry()}{strike}{otype}"
+    return sym
 
 def get_option_ltp(obj, symbol):
     token = get_option_token(symbol)

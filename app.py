@@ -22,7 +22,7 @@ TOTP_TOKEN  = os.environ.get("TOTP_TOKEN",  "")
 #   SETTINGS
 # ═══════════════════════════════════════
 CAPITAL          = 1000000
-LOT_SIZE         = 65
+LOT_SIZE         = 65          # NIFTY 50 lot size as per your broker
 STOP_LOSS_PCT    = 0.15
 TARGET_PCT       = 0.45
 CAPITAL_USE_PCT  = 0.80
@@ -30,8 +30,11 @@ NIFTY_TOKEN      = "99926000"
 NIFTY_EXCH       = "NSE"
 NIFTY_EXCH_TYPE  = 1
 
-SESSION_1 = ((9, 30), (11, 30))
-SESSION_2 = ((13, 30), (15, 0))
+# Trading sessions IST — bot only opens NEW trades inside these windows
+SESSION_1_START = (9,  30)
+SESSION_1_END   = (11, 30)
+SESSION_2_START = (13, 30)
+SESSION_2_END   = (15,  0)
 
 # ═══════════════════════════════════════
 #   TICK BUFFERS
@@ -42,6 +45,7 @@ hist_buffer    = deque(maxlen=500)
 
 last_micro_time  = [time.time()]
 last_signal_time = [time.time()]
+last_reset_date  = [None]        # tracks which calendar date we last reset stats
 
 # ═══════════════════════════════════════
 #   SHARED STATE
@@ -137,28 +141,57 @@ def connect_angel():
 # ═══════════════════════════════════════
 #   WEBSOCKET HANDLERS
 # ═══════════════════════════════════════
+def parse_ltp(raw):
+    """Angel One sends price in paise (integer). Convert to rupees."""
+    if raw is None:
+        return 0.0
+    raw = float(raw)
+    # Typical NIFTY range: 15000–30000. If raw > 1000000 it's paise.
+    if raw > 1_000_000:
+        return raw / 100.0
+    # Some feeds already send in rupees with decimals
+    return raw
+
 def on_data(wsapp, message):
     try:
         if not isinstance(message, dict):
             return
-        if state["tick_count"] == 0:
-            add_log(f"Raw tick: {message}", "info")
 
-        raw    = message.get("last_traded_price", 0)
-        ltp    = raw / 100.0 if raw > 100000 else float(raw)
-        volume = message.get("volume_trade_for_the_day",
-                 message.get("vol_traded_today",
-                 message.get("volume", 0)))
-        if ltp <= 0:
-            return
+        # Log first 5 raw ticks so we can debug price format
+        if state["tick_count"] < 5:
+            add_log(f"Raw tick #{state['tick_count']}: {message}", "info")
+
+        # Try every known field name Angel One uses for LTP
+        raw = (message.get("last_traded_price") or
+               message.get("ltp") or
+               message.get("close_price") or 0)
+
+        ltp = parse_ltp(raw)
+
+        volume = (message.get("volume_trade_for_the_day") or
+                  message.get("vol_traded_today") or
+                  message.get("volume") or 0)
+
         now = datetime.now(IST).replace(tzinfo=None)
+
+        # Always update market_open status on every tick
+        mo_start = now.replace(hour=9,  minute=15, second=0, microsecond=0)
+        mo_end   = now.replace(hour=15, minute=20, second=0, microsecond=0)
+        state["market_open"] = (mo_start <= now <= mo_end) and now.weekday() < 5
+        state["last_update"] = now.strftime("%H:%M:%S")
+
+        if ltp <= 100:
+            # Price too low to be NIFTY — log and skip but don't drop silently
+            if state["tick_count"] < 5:
+                add_log(f"⚠ Suspicious LTP={ltp} from raw={raw} — skipping tick", "error")
+            return
+
         tick = {"price": ltp, "volume": volume, "time": now}
         tick_buffer.append(tick)
         hist_buffer.append(tick)
 
         state["nifty_price"] = round(ltp, 2)
         state["tick_count"]  += 1
-        state["last_update"]  = now.strftime("%H:%M:%S")
 
         if time.time() - last_micro_time[0] >= 15:
             compute_micro_average()
@@ -169,11 +202,20 @@ def on_data(wsapp, message):
             last_signal_time[0] = time.time()
 
     except Exception as e:
-        pass
+        add_log(f"on_data error: {e}", "error")
+
+_ws_ref        = [None]          # holds current WebSocket instance for on_open subscribe
+_ws_token_list = [None]          # holds token list for on_open subscribe
 
 def on_open(wsapp):
     state["ws_connected"] = True
-    add_log("WebSocket connected — receiving live ticks ✓", "success")
+    add_log("WebSocket connected — subscribing to NIFTY ticks...", "success")
+    try:
+        # Subscribe AFTER connection is established — this is the correct order
+        wsapp.subscribe("abc123", 3, _ws_token_list[0])
+        add_log("Subscribed to NIFTY 50 feed ✓", "success")
+    except Exception as e:
+        add_log(f"Subscribe error: {e}", "error")
 
 def on_error(wsapp, error):
     state["ws_connected"] = False
@@ -321,16 +363,13 @@ def compute_signal_and_trade():
             state["reason"] = "Manual mode active — resume bot to enable auto-trading"
             return
 
-        now = datetime.now(IST).replace(tzinfo=None)
-        market_open  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
-        market_close = now.replace(hour=15, minute=20, second=0, microsecond=0)
-        if not (market_open <= now <= market_close) or now.weekday() >= 5:
+        if not is_market_hours():
             state["signal"] = "MARKET CLOSED"
             state["reason"] = "Mon–Fri 9:15 AM – 3:20 PM IST"
             return
 
         state["market_open"] = True
-        state["in_session"]  = True
+        state["in_session"]  = is_trading_session()
 
         if len(micro_buffer) < 5:
             state["signal"] = "HOLD"
@@ -373,10 +412,12 @@ def compute_signal_and_trade():
         pos   = state["position"]
         price = state["nifty_price"]
 
-        # only auto-open if no position exists
         if pos is None:
-            if signal in ("BUY", "SELL"):
+            # Only open NEW positions during defined session windows
+            if signal in ("BUY", "SELL") and state["in_session"]:
                 open_trade(obj, signal, price, reason, source="auto")
+            elif signal in ("BUY", "SELL") and not state["in_session"]:
+                state["reason"] = reason + " | Outside session window — no entry"
         else:
             # only manage auto-opened positions automatically
             if state["trade_source"] == "auto":
@@ -501,8 +542,67 @@ def close_trade(obj, reason="Signal"):
 # ═══════════════════════════════════════
 #   WEBSOCKET BOT LOOP
 # ═══════════════════════════════════════
+def is_market_hours():
+    now = datetime.now(IST).replace(tzinfo=None)
+    if now.weekday() >= 5:
+        return False
+    mo_start = now.replace(hour=9,  minute=15, second=0, microsecond=0)
+    mo_end   = now.replace(hour=15, minute=20, second=0, microsecond=0)
+    return mo_start <= now <= mo_end
+
+def is_trading_session():
+    """Returns True only during the two defined session windows where
+    the bot is allowed to OPEN new positions."""
+    now = datetime.now(IST).replace(tzinfo=None)
+    if now.weekday() >= 5:
+        return False
+    h, m = now.hour, now.minute
+    t = h * 60 + m
+    s1s = SESSION_1_START[0] * 60 + SESSION_1_START[1]
+    s1e = SESSION_1_END[0]   * 60 + SESSION_1_END[1]
+    s2s = SESSION_2_START[0] * 60 + SESSION_2_START[1]
+    s2e = SESSION_2_END[0]   * 60 + SESSION_2_END[1]
+    return (s1s <= t <= s1e) or (s2s <= t <= s2e)
+
+def daily_reset_if_needed():
+    """Reset per-day counters once per calendar day at market open."""
+    today = datetime.now(IST).date()
+    if last_reset_date[0] == today:
+        return
+    last_reset_date[0] = today
+    # Reset intra-day counters only — preserve balance/pnl across restarts
+    state["tick_count"]  = 0
+    state["micro_count"] = 0
+    tick_buffer.clear()
+    micro_buffer.clear()
+    hist_buffer.clear()
+    add_log(f"Daily reset for {today} ✓", "info")
+
+def market_status_thread():
+    """Background thread: keeps market_open, signal, and last_update
+    accurate every second — independent of tick arrivals."""
+    while True:
+        try:
+            now = datetime.now(IST).replace(tzinfo=None)
+            open_ = is_market_hours()
+            state["market_open"] = open_
+            state["last_update"] = now.strftime("%H:%M:%S")
+            if open_:
+                daily_reset_if_needed()
+            else:
+                if state["signal"] not in ("BOT PAUSED",):
+                    state["signal"] = "MARKET CLOSED"
+                    state["reason"] = "Mon–Fri 9:15 AM – 3:20 PM IST"
+        except Exception:
+            pass
+        time.sleep(1)
+
 def bot_loop():
     add_log("NSEAlgo v4 — WebSocket starting...", "info")
+
+    # start the market status heartbeat immediately
+    threading.Thread(target=market_status_thread, daemon=True).start()
+
     obj = connect_angel()
     if obj is None:
         add_log("Cannot start — login failed", "error")
@@ -511,28 +611,25 @@ def bot_loop():
 
     while True:
         try:
-            now = datetime.now(IST).replace(tzinfo=None)
-            market_open  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
-            market_close = now.replace(hour=15, minute=20, second=0, microsecond=0)
-            is_weekend   = now.weekday() >= 5
-
-            if is_weekend or not (market_open <= now <= market_close):
-                state["market_open"]  = False
+            if not is_market_hours():
                 state["ws_connected"] = False
-                state["signal"]       = "MARKET CLOSED"
-                state["reason"]       = "Mon–Fri 9:15 AM – 3:20 PM IST"
-                state["last_update"]  = now.strftime("%H:%M:%S")
-                add_log("Market closed — WebSocket will connect at 9:15 AM", "info")
-                time.sleep(60)
-                continue
+                add_log("Outside market hours — waiting for 9:15 AM IST", "info")
+                # sleep until market open (check every 30 s)
+                while not is_market_hours():
+                    time.sleep(30)
+                add_log("Market opening — reconnecting Angel One session...", "info")
 
-            state["market_open"] = True
-            add_log("Market open — connecting WebSocket...", "info")
-
+            # Re-login each morning (JWT expires)
             obj = connect_angel()
             if obj is None:
                 time.sleep(30)
                 continue
+
+            add_log("Market open — starting WebSocket feed...", "info")
+            daily_reset_if_needed()
+
+            token_list = [{"exchangeType": NIFTY_EXCH_TYPE, "tokens": [NIFTY_TOKEN]}]
+            _ws_token_list[0] = token_list   # on_open callback will read this
 
             ws = SmartWebSocketV2(
                 _auth_token[0],
@@ -545,26 +642,52 @@ def bot_loop():
             ws.on_error = on_error
             ws.on_close = on_close
 
-            token_list = [{"exchangeType": NIFTY_EXCH_TYPE, "tokens": [NIFTY_TOKEN]}]
-
             def run_ws():
-                ws.connect()
-                ws.subscribe("abc123", 3, token_list)
+                try:
+                    ws.connect()   # subscribe now happens inside on_open callback
+                except Exception as e:
+                    add_log(f"WS run error: {e}", "error")
+                    state["ws_connected"] = False
+
+            last_tick_time = [time.time()]
+
+            # Patch on_data to update last_tick_time
+            _orig_on_data = ws.on_data
+            def on_data_timed(wsapp, message):
+                last_tick_time[0] = time.time()
+                on_data(wsapp, message)
+            ws.on_data = on_data_timed
 
             ws_thread = threading.Thread(target=run_ws, daemon=True)
             ws_thread.start()
 
-            while True:
-                now = datetime.now(IST).replace(tzinfo=None)
-                if now > now.replace(hour=15, minute=20, second=0):
-                    ws.close_connection()
-                    if state["position"]:
-                        close_trade(obj, "Market Close")
+            # Give WS time to connect and first tick to arrive
+            time.sleep(15)
+
+            # Keep-alive: wait while market is open
+            while is_market_hours():
+                time.sleep(10)
+                secs_since_tick = time.time() - last_tick_time[0]
+                # Dead if: WS flag is off, OR connected but no tick for 60s
+                ws_dead = (not state["ws_connected"]) or (secs_since_tick > 60)
+                if ws_dead:
+                    add_log(f"WS dead (no tick for {secs_since_tick:.0f}s) — reconnecting...", "error")
                     break
-                time.sleep(30)
+
+            # Market closed or WS died
+            try:
+                ws.close_connection()
+            except Exception:
+                pass
+
+            if not is_market_hours() and state["position"]:
+                close_trade(obj, "Market Close")
+
+            if not is_market_hours():
+                add_log("Market closed for the day ✓", "info")
 
         except Exception as e:
-            add_log(f"Bot error: {e}", "error")
+            add_log(f"Bot loop error: {e}", "error")
             time.sleep(30)
 
 # ═══════════════════════════════════════

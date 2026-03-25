@@ -81,6 +81,8 @@ state = {
     "tick_count"   : 0,
     "micro_count"  : 0,
     "vol_ratio"    : 0.0,
+    "current_ltp"  : 0.0,
+    "unrealized_pnl": 0.0,
     # ── new manual / bot control fields ──
     "bot_paused"     : False,
     "trade_source"   : "auto",
@@ -789,8 +791,8 @@ def api_state():
         "capital"      : CAPITAL,
         "sl_price"     : round(pos["sl_price"],  2) if pos else 0,
         "tgt_price"    : round(pos["tgt_price"], 2) if pos else 0,
-        "unrealized"   : round((get_option_ltp(_obj[0], pos["symbol"]) or pos["entry_price"] - pos["entry_price"]) * pos["qty"], 2) if pos and _obj[0] else 0,
-        "current_ltp"  : get_option_ltp(_obj[0], pos["symbol"]) or 0 if pos and _obj[0] else 0,
+        "unrealized"   : state["unrealized_pnl"],
+        "current_ltp"  : state["current_ltp"],
         "bot_paused"   : state["bot_paused"],
         "trade_source" : state["trade_source"],
     })
@@ -1314,8 +1316,33 @@ setInterval(tick, 3000);
 @app.route("/")
 def home():
     return render_template_string(HTML)
+def ltp_monitor():
+    while True:
+        try:
+            pos = state["position"]
+            if pos and _obj[0]:
+                ltp = get_option_ltp(_obj[0], pos["symbol"])
+                if ltp:
+                    state["current_ltp"]    = ltp
+                    state["unrealized_pnl"] = round(
+                        (ltp - pos["entry_price"]) * pos["qty"], 2)
+                    # check SL and target every second
+                    if ltp <= pos["sl_price"]:
+                        add_log(f"SL hit! ₹{ltp:.2f}", "loss")
+                        close_trade(_obj[0], "Stop Loss")
+                    elif ltp >= pos["tgt_price"]:
+                        add_log(f"Target hit! ₹{ltp:.2f}", "profit")
+                        close_trade(_obj[0], "Target")
+            else:
+                state["current_ltp"]    = 0.0
+                state["unrealized_pnl"] = 0.0
+        except:
+            pass
+        time.sleep(1)
 
-threading.Thread(target=bot_loop, daemon=True).start()
+threading.Thread(target=ltp_monitor, daemon=True).start()
+
+ 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

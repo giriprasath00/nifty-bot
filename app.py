@@ -40,7 +40,7 @@ SESSION_2_END   = (15,  0)
 #   TICK BUFFERS
 # ═══════════════════════════════════════
 tick_buffer    = deque(maxlen=15)
-micro_buffer   = deque(maxlen=12)
+micro_buffer   = deque(maxlen=50)
 hist_buffer    = deque(maxlen=500)
 
 last_micro_time  = [time.time()]
@@ -424,11 +424,8 @@ def compute_signal_and_trade():
         price = state["nifty_price"]
 
         if pos is None:
-            # Only open NEW positions during defined session windows
-            if signal in ("BUY", "SELL") and state["in_session"]:
+            if signal in ("BUY", "SELL"):
                 open_trade(obj, signal, price, reason, source="auto")
-            elif signal in ("BUY", "SELL") and not state["in_session"]:
-                state["reason"] = reason + " | Outside session window — no entry"
         else:
             # only manage auto-opened positions automatically
             if state["trade_source"] == "auto":
@@ -451,19 +448,15 @@ def compute_signal_and_trade():
 #   OPTION FUNCTIONS
 # ═══════════════════════════════════════
 def get_nearest_expiry():
-    """Returns the next weekly expiry date (Thursday) in DDMMMYY format.
-    If today IS Thursday and market is still open, use today's expiry.
-    Otherwise use next Thursday."""
     today = datetime.now(IST).replace(tzinfo=None)
-    weekday = today.weekday()   # Mon=0 … Thu=3 … Sun=6
-    days_to_thursday = (3 - weekday) % 7
-    # If today is Thursday but after 3:30 PM, roll to next week
-    if days_to_thursday == 0 and today.hour >= 15 and today.minute >= 30:
-        days_to_thursday = 7
-    # If days_to_thursday == 0 we're on Thursday during market hours — use today
-    expiry = today + timedelta(days=days_to_thursday)
+    weekday = today.weekday()   # Mon=0 Tue=1 ... Sun=6
+    days_to_tuesday = (1 - weekday) % 7
+    # On Tuesday after 12 PM roll to next week
+    if days_to_tuesday == 0 and today.hour >= 12:
+        days_to_tuesday = 7
+    expiry = today + timedelta(days=days_to_tuesday)
     return expiry.strftime("%d%b%y").upper()
-
+    
 def find_closest_symbol(price, otype):
     """Search symbol master for the closest available strike to price."""
     expiry = get_nearest_expiry()

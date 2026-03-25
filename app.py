@@ -1277,7 +1277,20 @@ async function tick(){
         <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">LOTS × ${p.qty/p.lots||65}</div><div class="sm">${p.lots} lots = ${p.qty} units</div></div>
         <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">STOP LOSS</div><div class="sm r">₹${fi(d.sl_price)}</div></div>
         <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">TARGET</div><div class="sm g">₹${fi(d.tgt_price)}</div></div>
-        <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">ENTRY TIME</div><div class="sm">${p.entry_time}</div></div>`;
+        <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">ENTRY TIME</div><div class="sm">${p.entry_time}</div></div>
+        <div style="grid-column:span 3;margin-top:10px;padding-top:10px;border-top:1px solid #2a385040;display:flex;gap:24px;font-size:12px">
+         <span>Live LTP: <span class="sm y" id="cur-ltp">₹—</span></span>
+         <span>Unrealized P&L: <span class="sm" id="unr-pnl">₹—</span></span>
+        </div>`;
+    if(d.position && d.current_ltp){
+      const ltpEl = document.getElementById('cur-ltp');
+      const pnlEl = document.getElementById('unr-pnl');
+      if(ltpEl){
+        ltpEl.textContent = '₹' + fi(d.current_ltp);
+        pnlEl.textContent = (d.unrealized>=0?'+':'') + '₹' + fi(Math.abs(d.unrealized));
+        pnlEl.style.color = d.unrealized >= 0 ? '#4ade80' : '#fb7185';
+      }
+    }    
     } else {
       document.getElementById('pc').style.display  = 'none';
       document.getElementById('npc').style.display = 'block';
@@ -1341,6 +1354,7 @@ def ltp_monitor():
         time.sleep(1)
 
 threading.Thread(target=ltp_monitor, daemon=True).start()
+threading.Thread(target=bot_loop, daemon=True).start()
 
  
 

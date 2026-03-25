@@ -82,8 +82,9 @@ state = {
     "micro_count"  : 0,
     "vol_ratio"    : 0.0,
     # ── new manual / bot control fields ──
-    "bot_paused"   : False,
-    "trade_source" : "auto",   # "auto" or "manual"
+    "bot_paused"     : False,
+    "trade_source"   : "auto",
+    "last_tick_time" : 0.0,     # epoch time of last received WS message
 }
 
 def add_log(msg, level="info"):
@@ -157,6 +158,8 @@ def on_data(wsapp, message):
         if not isinstance(message, dict):
             return
 
+        state["last_tick_time"] = time.time()   # always stamp on any message
+
         # Log first 5 raw ticks so we can debug price format
         if state["tick_count"] < 5:
             add_log(f"Raw tick #{state['tick_count']}: {message}", "info")
@@ -210,12 +213,16 @@ _ws_token_list = [None]          # holds token list for on_open subscribe
 def on_open(wsapp):
     state["ws_connected"] = True
     add_log("WebSocket connected — subscribing to NIFTY ticks...", "success")
-    try:
-        # Subscribe AFTER connection is established — this is the correct order
-        wsapp.subscribe("abc123", 3, _ws_token_list[0])
-        add_log("Subscribed to NIFTY 50 feed ✓", "success")
-    except Exception as e:
-        add_log(f"Subscribe error: {e}", "error")
+    # Subscribe is called on the SmartWebSocketV2 instance (_ws_ref),
+    # NOT on the raw wsapp/WebSocketApp object passed to this callback
+    def do_subscribe():
+        try:
+            time.sleep(0.5)  # brief pause to let handshake settle
+            _ws_ref[0].subscribe("abc123", 3, _ws_token_list[0])
+            add_log("Subscribed to NIFTY 50 feed ✓", "success")
+        except Exception as e:
+            add_log(f"Subscribe error: {e}", "error")
+    threading.Thread(target=do_subscribe, daemon=True).start()
 
 def on_error(wsapp, error):
     state["ws_connected"] = False
@@ -629,7 +636,7 @@ def bot_loop():
             daily_reset_if_needed()
 
             token_list = [{"exchangeType": NIFTY_EXCH_TYPE, "tokens": [NIFTY_TOKEN]}]
-            _ws_token_list[0] = token_list   # on_open callback will read this
+            _ws_token_list[0] = token_list
 
             ws = SmartWebSocketV2(
                 _auth_token[0],
@@ -637,41 +644,36 @@ def bot_loop():
                 CLIENT_CODE.strip(),
                 _feed_token[0]
             )
+            _ws_ref[0] = ws          # must be set BEFORE connect so on_open can call subscribe
             ws.on_open  = on_open
             ws.on_data  = on_data
             ws.on_error = on_error
             ws.on_close = on_close
 
+            # Reset last_tick_time so the 60s zombie check starts fresh
+            state["last_tick_time"] = time.time()
+
             def run_ws():
                 try:
-                    ws.connect()   # subscribe now happens inside on_open callback
+                    ws.connect()
                 except Exception as e:
                     add_log(f"WS run error: {e}", "error")
                     state["ws_connected"] = False
 
-            last_tick_time = [time.time()]
-
-            # Patch on_data to update last_tick_time
-            _orig_on_data = ws.on_data
-            def on_data_timed(wsapp, message):
-                last_tick_time[0] = time.time()
-                on_data(wsapp, message)
-            ws.on_data = on_data_timed
-
             ws_thread = threading.Thread(target=run_ws, daemon=True)
             ws_thread.start()
 
-            # Give WS time to connect and first tick to arrive
-            time.sleep(15)
+            # Give WS time to connect and first tick to arrive before zombie check begins
+            time.sleep(20)
 
             # Keep-alive: wait while market is open
             while is_market_hours():
                 time.sleep(10)
-                secs_since_tick = time.time() - last_tick_time[0]
-                # Dead if: WS flag is off, OR connected but no tick for 60s
+                secs_since_tick = time.time() - state["last_tick_time"]
+                # Dead if: WS flag dropped, OR connected but no tick for 60s (zombie)
                 ws_dead = (not state["ws_connected"]) or (secs_since_tick > 60)
                 if ws_dead:
-                    add_log(f"WS dead (no tick for {secs_since_tick:.0f}s) — reconnecting...", "error")
+                    add_log(f"WS zombie detected ({secs_since_tick:.0f}s since last tick) — reconnecting...", "error")
                     break
 
             # Market closed or WS died

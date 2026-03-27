@@ -23,8 +23,8 @@ TOTP_TOKEN  = os.environ.get("TOTP_TOKEN",  "")
 # ═══════════════════════════════════════
 CAPITAL          = 1000000
 LOT_SIZE         = 65          # NIFTY 50 lot size as per your broker
-STOP_LOSS_PCT    = 0.15
-TARGET_PCT       = 0.45
+STOP_LOSS_PTS    = 10
+TARGET_PTS       = 25
 CAPITAL_USE_PCT  = 0.80
 NIFTY_TOKEN      = "99926000"
 NIFTY_EXCH       = "NSE"
@@ -550,8 +550,8 @@ def open_trade(obj, signal, price, reason, source="auto", strike_override=None, 
         add_log("Insufficient balance!", "error")
         return False, "Insufficient balance"
 
-    sl_price  = round(ltp * (1 - STOP_LOSS_PCT), 2)
-    tgt_price = round(ltp * (1 + TARGET_PCT),    2)
+    sl_price  = round(ltp - STOP_LOSS_PTS, 2)
+    tgt_price = round(ltp + TARGET_PTS,    2)
 
     state["balance"]      -= cost
     state["trade_source"]  = source
@@ -1075,6 +1075,8 @@ td{padding:6px 7px;border-bottom:1px solid #2a385025;color:#cbd5e1}
     <div style="display:flex;gap:16px;margin-top:10px;font-size:11px;flex-wrap:wrap">
       <span>Support: <span class="g" id="sup">—</span></span>
       <span>Resistance: <span class="r" id="res">—</span></span>
+      <span>SL: <span class="r">−₹10/unit</span></span>
+      <span>TGT: <span class="g">+₹25/unit</span></span>
       <span>ADX: <span class="y" id="adx2">—</span> <span style="color:#64748b">(≥25 = trending)</span></span>
     </div>
   </div>
@@ -1275,8 +1277,8 @@ async function tick(){
         <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">SYMBOL</div><div class="sm o">${p.symbol}</div></div>
         <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">ENTRY</div><div class="sm">₹${fi(p.entry_price)}</div></div>
         <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">LOTS × ${p.qty/p.lots||65}</div><div class="sm">${p.lots} lots = ${p.qty} units</div></div>
-        <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">STOP LOSS</div><div class="sm r">₹${fi(d.sl_price)}</div></div>
-        <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">TARGET</div><div class="sm g">₹${fi(d.tgt_price)}</div></div>
+        <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">STOP LOSS (−₹10)</div><div class="sm r">₹${fi(d.sl_price)}</div></div>
+        <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">TARGET (+₹25)</div><div class="sm g">₹${fi(d.tgt_price)}</div></div>
         <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">ENTRY TIME</div><div class="sm">${p.entry_time}</div></div>
         <div style="grid-column:span 3;margin-top:10px;padding-top:10px;border-top:1px solid #2a385040;display:flex;gap:24px;font-size:12px">
          <span>Live LTP: <span class="sm y" id="cur-ltp">₹—</span></span>

@@ -887,93 +887,93 @@ HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NSEAlgo v4 — WebSocket Bot</title>
+<title>NSEAlgo v4 — WebSocket Bot (Light Mode)</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Sora:wght@700&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#07090f;color:#e2e8f0;font-family:'JetBrains Mono',monospace;min-height:100vh;font-size:13px}
-.hdr{background:#0f1520;border-bottom:1px solid #2a3850;padding:11px 18px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:9;gap:8px;flex-wrap:wrap}
-.logo{font-family:'Sora',sans-serif;font-size:15px;font-weight:700;color:#fff}.logo em{color:#f97316;font-style:normal}
-.live{width:7px;height:7px;border-radius:50%;background:#22c55e;display:inline-block;animation:blink 1.1s infinite;margin-right:5px}
+body{background:#f8fafc;color:#1e293b;font-family:'JetBrains Mono',monospace;min-height:100vh;font-size:13px}
+.hdr{background:#ffffff;border-bottom:1px solid #e2e8f0;padding:11px 18px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:9;gap:8px;flex-wrap:wrap;box-shadow:0 1px 2px rgba(0,0,0,0.05)}
+.logo{font-family:'Sora',sans-serif;font-size:15px;font-weight:700;color:#0f172a}.logo em{color:#ea580c;font-style:normal}
+.live{width:7px;height:7px;border-radius:50%;background:#16a34a;display:inline-block;animation:blink 1.1s infinite;margin-right:5px}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
-.upd{font-size:10px;color:#94a3b8;padding:2px 9px;background:#0f151e;border-radius:99px;border:1px solid #2a3850}
+.upd{font-size:10px;color:#475569;padding:2px 9px;background:#f1f5f9;border-radius:99px;border:1px solid #cbd5e1}
 .wrap{max-width:980px;margin:0 auto;padding:14px 14px 40px}
 .g2{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-bottom:11px}
 .g4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:11px}
-.card{background:#0f1520;border:1px solid #2a3850;border-radius:10px;padding:13px 15px}
-.ct{font-size:9px;color:#94a3b8;letter-spacing:.12em;text-transform:uppercase;margin-bottom:7px}
-.big{font-family:'Sora',sans-serif;font-size:24px;font-weight:700;color:#fff;letter-spacing:-.02em}
-.sm{font-size:12px;font-weight:600;color:#fff}
-.g{color:#22c55e}.r{color:#f43f5e}.o{color:#f97316}.y{color:#fbbf24}.pu{color:#a78bfa}
+.card{background:#ffffff;border:1px solid #e2e8f0;border-radius:10px;padding:13px 15px;box-shadow:0 1px 3px rgba(0,0,0,0.05)}
+.ct{font-size:9px;color:#64748b;letter-spacing:.12em;text-transform:uppercase;margin-bottom:7px;font-weight:700}
+.big{font-family:'Sora',sans-serif;font-size:24px;font-weight:700;color:#0f172a;letter-spacing:-.02em}
+.sm{font-size:12px;font-weight:700;color:#0f172a}
+.g{color:#15803d}.r{color:#be123c}.o{color:#ea580c}.y{color:#b45309}.pu{color:#6d28d9}
 .sig{display:inline-flex;align-items:center;gap:6px;padding:5px 13px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:.06em}
-.sbuy{background:#22c55e20;color:#4ade80;border:1px solid #22c55e50}
-.ssell{background:#f43f5e20;color:#fb7185;border:1px solid #f43f5e50}
-.shold{background:#ffffff10;color:#94a3b8;border:1px solid #ffffff18}
-.sclosed{background:#fbbf2420;color:#fcd34d;border:1px solid #fbbf2450}
-.spaused{background:#a78bfa20;color:#c4b5fd;border:1px solid #a78bfa50}
-.pcard{border:1px solid #f9731650;background:#f9731608}
-.pcard-manual{border:1px solid #a78bfa60;background:#a78bfa08}
-.srow{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #2a385040;font-size:11px}
+.sbuy{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0}
+.ssell{background:#ffe4e6;color:#be123c;border:1px solid #fecdd3}
+.shold{background:#f1f5f9;color:#475569;border:1px solid #cbd5e1}
+.sclosed{background:#fef9c3;color:#a16207;border:1px solid #fef08a}
+.spaused{background:#f3e8ff;color:#6d28d9;border:1px solid #e9d5ff}
+.pcard{border:1px solid #fdba74;background:#fff7ed}
+.pcard-manual{border:1px solid #d8b4fe;background:#faf5ff}
+.srow{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #f1f5f9;font-size:11px}
 .srow:last-child{border-bottom:none}
 .vote{flex:1;padding:7px;border-radius:5px;text-align:center;font-size:11px;font-weight:700}
-.vbuy{background:#22c55e15;color:#4ade80;border:1px solid #22c55e25}
-.vsell{background:#f43f5e15;color:#fb7185;border:1px solid #f43f5e25}
-.lr{padding:5px 8px;border-radius:4px;font-size:10px;margin-bottom:3px;border-left:2px solid #2a3850;line-height:1.4}
-.lbuy{border-left-color:#22c55e;color:#4ade80}
-.lsell{border-left-color:#f43f5e;color:#fb7185}
-.lprofit{border-left-color:#22c55e80;color:#4ade80}
-.lloss{border-left-color:#f43f5e80;color:#fb7185}
-.lsuccess{border-left-color:#22c55e;color:#4ade80}
-.lerror{border-left-color:#f43f5e;color:#fb7185}
-.linfo{border-left-color:#2a3850;color:#94a3b8}
+.vbuy{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0}
+.vsell{background:#ffe4e6;color:#be123c;border:1px solid #fecdd3}
+.lr{padding:5px 8px;border-radius:4px;font-size:10px;margin-bottom:3px;border-left:2px solid #cbd5e1;line-height:1.4;background:#f8fafc}
+.lbuy{border-left-color:#16a34a;color:#15803d}
+.lsell{border-left-color:#e11d48;color:#be123c}
+.lprofit{border-left-color:#22c55e;color:#15803d}
+.lloss{border-left-color:#f43f5e;color:#be123c}
+.lsuccess{border-left-color:#16a34a;color:#15803d}
+.lerror{border-left-color:#e11d48;color:#be123c}
+.linfo{border-left-color:#94a3b8;color:#475569}
 table{width:100%;border-collapse:collapse;font-size:11px}
-th{color:#94a3b8;font-size:9px;letter-spacing:.1em;padding:5px 7px;text-align:left;border-bottom:1px solid #2a3850}
-td{padding:6px 7px;border-bottom:1px solid #2a385025;color:#cbd5e1}
-.pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:10px;font-weight:600}
-.pill-g{background:#22c55e20;color:#4ade80;border:1px solid #22c55e30}
-.pill-r{background:#f43f5e20;color:#fb7185;border:1px solid #f43f5e30}
-.pill-y{background:#fbbf2420;color:#fcd34d;border:1px solid #fbbf2430}
-.pill-pu{background:#a78bfa20;color:#c4b5fd;border:1px solid #a78bfa30}
+th{color:#64748b;font-size:9px;letter-spacing:.1em;padding:5px 7px;text-align:left;border-bottom:1px solid #e2e8f0}
+td{padding:6px 7px;border-bottom:1px solid #f1f5f9;color:#334155;font-weight:500}
+.pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:10px;font-weight:700}
+.pill-g{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0}
+.pill-r{background:#ffe4e6;color:#be123c;border:1px solid #fecdd3}
+.pill-y{background:#fef9c3;color:#a16207;border:1px solid #fef08a}
+.pill-pu{background:#f3e8ff;color:#6d28d9;border:1px solid #e9d5ff}
 
 /* ── Manual Trade Panel ── */
-.manual-panel{background:#0d1219;border:1px solid #a78bfa40;border-radius:12px;padding:16px 18px;margin-bottom:11px}
-.manual-title{font-size:9px;color:#a78bfa;letter-spacing:.14em;text-transform:uppercase;margin-bottom:14px;display:flex;align-items:center;gap:8px}
-.manual-title::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,#a78bfa30,transparent)}
+.manual-panel{background:#ffffff;border:1px solid #d8b4fe;border-radius:12px;padding:16px 18px;margin-bottom:11px;box-shadow:0 2px 8px rgba(167,139,250,0.1)}
+.manual-title{font-size:9px;color:#6d28d9;letter-spacing:.14em;text-transform:uppercase;margin-bottom:14px;display:flex;align-items:center;gap:8px;font-weight:700}
+.manual-title::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,#e9d5ff,transparent)}
 .manual-row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
 .inp-group{display:flex;flex-direction:column;gap:4px}
-.inp-label{font-size:9px;color:#64748b;letter-spacing:.1em;text-transform:uppercase}
-.inp{background:#07090f;border:1px solid #2a3850;border-radius:6px;padding:7px 10px;color:#e2e8f0;font-family:'JetBrains Mono',monospace;font-size:12px;width:110px;outline:none;transition:border-color .2s}
-.inp:focus{border-color:#a78bfa60}
-.inp::placeholder{color:#334155}
+.inp-label{font-size:9px;color:#64748b;letter-spacing:.1em;text-transform:uppercase;font-weight:700}
+.inp{background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;padding:7px 10px;color:#0f172a;font-family:'JetBrains Mono',monospace;font-size:12px;width:110px;outline:none;transition:border-color .2s;font-weight:600}
+.inp:focus{border-color:#a78bfa}
+.inp::placeholder{color:#94a3b8;font-weight:400}
 .btn{padding:8px 16px;border-radius:7px;border:none;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;cursor:pointer;transition:all .15s;letter-spacing:.04em;white-space:nowrap}
 .btn:active{transform:scale(.97)}
-.btn:disabled{opacity:.35;cursor:not-allowed;transform:none}
-.btn-ce{background:#22c55e18;color:#4ade80;border:1px solid #22c55e50}
-.btn-ce:hover:not(:disabled){background:#22c55e30;border-color:#22c55e90;box-shadow:0 0 12px #22c55e20}
-.btn-pe{background:#f43f5e18;color:#fb7185;border:1px solid #f43f5e50}
-.btn-pe:hover:not(:disabled){background:#f43f5e30;border-color:#f43f5e90;box-shadow:0 0 12px #f43f5e20}
-.btn-close-pos{background:#f9731618;color:#fb923c;border:1px solid #f9731650}
-.btn-close-pos:hover:not(:disabled){background:#f9731630;border-color:#f9731690;box-shadow:0 0 12px #f9731620}
-.btn-toggle-pause{background:#a78bfa18;color:#c4b5fd;border:1px solid #a78bfa50;font-size:11px;padding:6px 14px;border-radius:7px;font-family:'JetBrains Mono',monospace;font-weight:700;cursor:pointer;transition:all .15s}
-.btn-toggle-pause:hover{background:#a78bfa30;border-color:#a78bfa80}
-.btn-toggle-resume{background:#22c55e18;color:#4ade80;border:1px solid #22c55e50;font-size:11px;padding:6px 14px;border-radius:7px;font-family:'JetBrains Mono',monospace;font-weight:700;cursor:pointer;transition:all .15s}
-.btn-toggle-resume:hover{background:#22c55e30}
-.manual-hint{font-size:10px;color:#475569;margin-top:10px;line-height:1.5}
-.toast{position:fixed;bottom:24px;right:24px;padding:10px 18px;border-radius:8px;font-size:12px;font-weight:600;z-index:9999;opacity:0;transform:translateY(8px);transition:all .25s;pointer-events:none;max-width:320px;line-height:1.4}
+.btn:disabled{opacity:.4;cursor:not-allowed;transform:none}
+.btn-ce{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0}
+.btn-ce:hover:not(:disabled){background:#bbf7d0;border-color:#86efac;box-shadow:0 2px 6px rgba(34,197,94,0.15)}
+.btn-pe{background:#ffe4e6;color:#be123c;border:1px solid #fecdd3}
+.btn-pe:hover:not(:disabled){background:#fecdd3;border-color:#fda4af;box-shadow:0 2px 6px rgba(244,63,94,0.15)}
+.btn-close-pos{background:#ffedd5;color:#c2410c;border:1px solid #fed7aa}
+.btn-close-pos:hover:not(:disabled){background:#fed7aa;border-color:#fdba74;box-shadow:0 2px 6px rgba(249,115,22,0.15)}
+.btn-toggle-pause{background:#f3e8ff;color:#6d28d9;border:1px solid #e9d5ff;font-size:11px;padding:6px 14px;border-radius:7px;font-family:'JetBrains Mono',monospace;font-weight:700;cursor:pointer;transition:all .15s}
+.btn-toggle-pause:hover{background:#e9d5ff;border-color:#d8b4fe}
+.btn-toggle-resume{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0;font-size:11px;padding:6px 14px;border-radius:7px;font-family:'JetBrains Mono',monospace;font-weight:700;cursor:pointer;transition:all .15s}
+.btn-toggle-resume:hover{background:#bbf7d0;border-color:#86efac}
+.manual-hint{font-size:10px;color:#64748b;margin-top:10px;line-height:1.5}
+.toast{position:fixed;bottom:24px;right:24px;padding:10px 18px;border-radius:8px;font-size:12px;font-weight:700;z-index:9999;opacity:0;transform:translateY(8px);transition:all .25s;pointer-events:none;max-width:320px;line-height:1.4;box-shadow:0 4px 12px rgba(0,0,0,0.1)}
 .toast.show{opacity:1;transform:translateY(0)}
-.toast-ok{background:#22c55e20;color:#4ade80;border:1px solid #22c55e50}
-.toast-err{background:#f43f5e20;color:#fb7185;border:1px solid #f43f5e50}
+.toast-ok{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0}
+.toast-err{background:#ffe4e6;color:#be123c;border:1px solid #fecdd3}
 .source-badge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:9px;font-weight:700;letter-spacing:.06em;margin-left:6px;vertical-align:middle}
-.src-auto{background:#3b82f620;color:#93c5fd;border:1px solid #3b82f630}
-.src-manual{background:#a78bfa20;color:#c4b5fd;border:1px solid #a78bfa40}
+.src-auto{background:#dbeafe;color:#1d4ed8;border:1px solid #bfdbfe}
+.src-manual{background:#f3e8ff;color:#6d28d9;border:1px solid #e9d5ff}
 @media(max-width:640px){.g4{grid-template-columns:1fr 1fr}.g2{grid-template-columns:1fr}.big{font-size:19px}.manual-row{flex-direction:column}.inp{width:100%}}
 </style>
 </head>
 <body>
 <div class="hdr">
-  <div class="logo"><em>NSE</em>Algo <span style="font-size:10px;font-weight:400;color:#64748b;margin-left:6px">v4 · WebSocket · NIFTY F&O</span></div>
+  <div class="logo"><em>NSE</em>Algo <span style="font-size:10px;font-weight:600;color:#64748b;margin-left:6px">v4 · WebSocket · NIFTY F&O</span></div>
   <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-    <span id="li" style="font-size:10px;color:#64748b">Connecting...</span>
+    <span id="li" style="font-size:10px;color:#475569;font-weight:600">Connecting...</span>
     <span id="ws" class="pill pill-r">WS Off</span>
     <span id="sess" class="pill pill-y" style="display:none">—</span>
     <button id="bot-toggle" class="btn-toggle-pause" onclick="toggleBot()">⏸ Pause Bot</button>
@@ -983,18 +983,17 @@ td{padding:6px 7px;border-bottom:1px solid #2a385025;color:#cbd5e1}
 
 <div class="wrap">
 
-  <!-- Price + Signal -->
   <div class="g2">
     <div class="card">
       <div class="ct">NIFTY 50 · Live WebSocket price</div>
       <div class="big" id="np">₹—</div>
-      <div style="margin-top:8px;display:flex;gap:14px;font-size:11px;flex-wrap:wrap">
+      <div style="margin-top:8px;display:flex;gap:14px;font-size:11px;flex-wrap:wrap;font-weight:600">
         <span>EMA9: <span id="e9" class="o">—</span></span>
         <span>EMA21: <span id="e21" class="pu">—</span></span>
         <span>VWAP: <span id="vwap" class="y">—</span></span>
         <span>ADX: <span id="adx" class="g">—</span></span>
       </div>
-      <div style="margin-top:6px;display:flex;gap:10px;font-size:10px;color:#64748b">
+      <div style="margin-top:6px;display:flex;gap:10px;font-size:10px;color:#64748b;font-weight:600">
         <span>Ticks: <span id="tc" class="g">0</span></span>
         <span>Micro candles: <span id="mc" class="y">0</span>/12</span>
       </div>
@@ -1002,7 +1001,7 @@ td{padding:6px 7px;border-bottom:1px solid #2a385025;color:#cbd5e1}
     <div class="card">
       <div class="ct">Final signal (2/3 vote + ADX filter)</div>
       <div id="sb"><span class="sig shold">— WAITING</span></div>
-      <div style="margin-top:8px;font-size:11px;color:#94a3b8" id="sr">—</div>
+      <div style="margin-top:8px;font-size:11px;color:#475569;font-weight:600" id="sr">—</div>
       <div style="display:flex;gap:8px;margin-top:10px">
         <div class="vote vbuy" id="bv">🟢 BUY 0/3</div>
         <div class="vote vsell" id="sv">🔴 SELL 0/3</div>
@@ -1010,7 +1009,6 @@ td{padding:6px 7px;border-bottom:1px solid #2a385025;color:#cbd5e1}
     </div>
   </div>
 
-  <!-- Stats -->
   <div class="g4">
     <div class="card">
       <div class="ct">Balance</div>
@@ -1019,24 +1017,23 @@ td{padding:6px 7px;border-bottom:1px solid #2a385025;color:#cbd5e1}
     <div class="card">
       <div class="ct">Total P&L</div>
       <div class="big" style="font-size:18px" id="pnl">₹0</div>
-      <div style="font-size:10px;margin-top:2px" id="pnlp">0.00%</div>
+      <div style="font-size:11px;font-weight:700;margin-top:2px" id="pnlp">0.00%</div>
     </div>
     <div class="card">
       <div class="ct">Win rate</div>
       <div class="big y" style="font-size:18px" id="wr">0%</div>
-      <div style="font-size:10px;color:#94a3b8;margin-top:2px" id="trd">0 trades</div>
+      <div style="font-size:10px;color:#64748b;font-weight:600;margin-top:2px" id="trd">0 trades</div>
     </div>
     <div class="card">
       <div class="ct">Wins / Losses</div>
       <div style="display:flex;gap:10px;align-items:baseline;margin-top:3px">
         <span class="big g" style="font-size:18px" id="wi">0</span>
-        <span style="color:#475569">/</span>
+        <span style="color:#94a3b8;font-weight:700">/</span>
         <span class="big r" style="font-size:18px" id="lo">0</span>
       </div>
     </div>
   </div>
 
-  <!-- ─── MANUAL TRADE PANEL ─── -->
   <div class="manual-panel">
     <div class="manual-title">🖐 Manual Trading</div>
     <div class="manual-row">
@@ -1057,47 +1054,44 @@ td{padding:6px 7px;border-bottom:1px solid #2a385025;color:#cbd5e1}
     </div>
   </div>
 
-  <!-- Strategy Breakdown -->
   <div class="card" style="margin-bottom:11px">
     <div class="ct">Strategy breakdown — 3 signals voting every 3 minutes</div>
     <div class="srow">
-      <span class="o" style="font-size:11px;font-weight:600">EMA 9/21 (on 15-sec averages)</span>
-      <span id="ema-s" style="font-size:11px;color:#94a3b8">—</span>
+      <span class="o" style="font-size:11px;font-weight:700">EMA 9/21 (on 15-sec averages)</span>
+      <span id="ema-s" style="font-size:11px;color:#475569;font-weight:600">—</span>
     </div>
     <div class="srow">
-      <span class="y" style="font-size:11px;font-weight:600">VWAP (Volume Weighted Avg Price)</span>
-      <span id="vwap-s" style="font-size:11px;color:#94a3b8">—</span>
+      <span class="y" style="font-size:11px;font-weight:700">VWAP (Volume Weighted Avg Price)</span>
+      <span id="vwap-s" style="font-size:11px;color:#475569;font-weight:600">—</span>
     </div>
     <div class="srow">
-      <span class="pu" style="font-size:11px;font-weight:600">Support / Resistance</span>
-      <span id="sr-s" style="font-size:11px;color:#94a3b8">—</span>
+      <span class="pu" style="font-size:11px;font-weight:700">Support / Resistance</span>
+      <span id="sr-s" style="font-size:11px;color:#475569;font-weight:600">—</span>
     </div>
-    <div style="display:flex;gap:16px;margin-top:10px;font-size:11px;flex-wrap:wrap">
+    <div style="display:flex;gap:16px;margin-top:10px;font-size:11px;flex-wrap:wrap;font-weight:600">
       <span>Support: <span class="g" id="sup">—</span></span>
       <span>Resistance: <span class="r" id="res">—</span></span>
       <span>SL: <span class="r">−₹10/unit</span></span>
       <span>TGT: <span class="g">+₹25/unit</span></span>
-      <span>ADX: <span class="y" id="adx2">—</span> <span style="color:#64748b">(≥25 = trending)</span></span>
+      <span>ADX: <span class="y" id="adx2">—</span> <span style="color:#94a3b8">(≥25 = trending)</span></span>
     </div>
   </div>
 
-  <!-- Open Position -->
   <div class="card pcard" id="pc" style="margin-bottom:11px;display:none">
     <div class="ct" id="pc-title">📂 Open position</div>
     <div id="pg" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:4px"></div>
-    <div style="margin-top:12px;padding-top:10px;border-top:1px solid #2a385040;display:flex;justify-content:flex-end">
+    <div style="margin-top:12px;padding-top:10px;border-top:1px solid #fed7aa;display:flex;justify-content:flex-end">
       <button class="btn btn-close-pos" onclick="manualClose()">✕ Close Position Now</button>
     </div>
   </div>
   <div class="card" id="npc" style="margin-bottom:11px;text-align:center;padding:14px">
-    <div style="font-size:11px;color:#64748b">📂 No open position — use manual buttons above or wait for auto signal</div>
+    <div style="font-size:11px;color:#64748b;font-weight:600">📂 No open position — use manual buttons above or wait for auto signal</div>
   </div>
 
-  <!-- Trade history + Log -->
   <div class="g2">
     <div class="card">
       <div class="ct">Trade history</div>
-      <div id="te" style="font-size:11px;color:#64748b;padding:8px 0">No trades yet today</div>
+      <div id="te" style="font-size:11px;color:#64748b;padding:8px 0;font-weight:600">No trades yet today</div>
       <table id="tt" style="display:none">
         <thead><tr><th>Symbol</th><th>Lots</th><th>P&L</th><th>Src</th><th>Reason</th><th>Time</th></tr></thead>
         <tbody id="tb"></tbody>
@@ -1111,7 +1105,6 @@ td{padding:6px 7px;border-bottom:1px solid #2a385025;color:#cbd5e1}
 
 </div>
 
-<!-- Toast notification -->
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1210,7 +1203,7 @@ async function tick(){
     document.getElementById('e21').textContent  = d.ema21 || '—';
     document.getElementById('vwap').textContent = d.vwap  ? '₹'+fi(d.vwap) : '—';
     document.getElementById('adx').textContent  = d.adx   ? d.adx.toFixed(1) : '—';
-    document.getElementById('adx').style.color  = d.adx >= 25 ? '#4ade80' : '#fb7185';
+    document.getElementById('adx').style.color  = d.adx >= 25 ? '#15803d' : '#be123c';
     document.getElementById('tc').textContent   = d.tick_count  || 0;
     document.getElementById('mc').textContent   = d.micro_count || 0;
 
@@ -1232,7 +1225,7 @@ async function tick(){
     pe.className = 'big '+(d.total_pnl>=0?'g':'r');
     pe.style.fontSize = '18px';
     document.getElementById('pnlp').textContent = (d.pnl_pct>=0?'+':'')+d.pnl_pct+'%';
-    document.getElementById('pnlp').style.color = d.pnl_pct>=0?'#4ade80':'#fb7185';
+    document.getElementById('pnlp').style.color = d.pnl_pct>=0?'#15803d':'#be123c';
     document.getElementById('bal').textContent  = '₹'+fi(d.balance);
     document.getElementById('wr').textContent   = d.winrate+'%';
     document.getElementById('trd').textContent  = (d.wins+d.losses)+' trades';
@@ -1246,7 +1239,7 @@ async function tick(){
     document.getElementById('sup').textContent    = d.support    ? '₹'+fi(d.support)    : '—';
     document.getElementById('res').textContent    = d.resistance ? '₹'+fi(d.resistance) : '—';
     document.getElementById('adx2').textContent   = d.adx ? d.adx.toFixed(1) : '—';
-    document.getElementById('adx2').style.color   = d.adx >= 25 ? '#4ade80' : '#fb7185';
+    document.getElementById('adx2').style.color   = d.adx >= 25 ? '#15803d' : '#be123c';
 
     // manual button state
     document.getElementById('btn-ce').disabled        = hasPos;
@@ -1256,9 +1249,9 @@ async function tick(){
     // hint
     const hint = document.getElementById('m-hint');
     if(hasPos){
-      hint.innerHTML = '<span style="color:#f97316">⚠ A position is open. Close it before placing a new trade.</span>';
+      hint.innerHTML = '<span style="color:#ea580c;font-weight:700">⚠ A position is open. Close it before placing a new trade.</span>';
     } else if(d.bot_paused){
-      hint.innerHTML = '<span style="color:#c4b5fd">🖐 Bot paused. You are in full manual control.</span>';
+      hint.innerHTML = '<span style="color:#6d28d9;font-weight:700">🖐 Bot paused. You are in full manual control.</span>';
     } else {
       hint.textContent = 'Leave strike blank to use ATM (nearest ₹50 strike). Leave lots blank to use 80% of available capital.';
     }
@@ -1274,13 +1267,13 @@ async function tick(){
       const srcBadge = `<span class="source-badge ${isManual?'src-manual':'src-auto'}">${isManual?'🖐 MANUAL':'🤖 AUTO'}</span>`;
       document.getElementById('pc-title').innerHTML = '📂 Open position' + srcBadge;
       document.getElementById('pg').innerHTML = `
-        <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">SYMBOL</div><div class="sm o">${p.symbol}</div></div>
-        <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">ENTRY</div><div class="sm">₹${fi(p.entry_price)}</div></div>
-        <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">LOTS × ${p.qty/p.lots||65}</div><div class="sm">${p.lots} lots = ${p.qty} units</div></div>
-        <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">STOP LOSS (−₹10)</div><div class="sm r">₹${fi(d.sl_price)}</div></div>
-        <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">TARGET (+₹25)</div><div class="sm g">₹${fi(d.tgt_price)}</div></div>
-        <div><div style="font-size:9px;color:#64748b;margin-bottom:2px">ENTRY TIME</div><div class="sm">${p.entry_time}</div></div>
-        <div style="grid-column:span 3;margin-top:10px;padding-top:10px;border-top:1px solid #2a385040;display:flex;gap:24px;font-size:12px">
+        <div><div style="font-size:9px;color:#64748b;font-weight:700;margin-bottom:2px">SYMBOL</div><div class="sm o">${p.symbol}</div></div>
+        <div><div style="font-size:9px;color:#64748b;font-weight:700;margin-bottom:2px">ENTRY</div><div class="sm">₹${fi(p.entry_price)}</div></div>
+        <div><div style="font-size:9px;color:#64748b;font-weight:700;margin-bottom:2px">LOTS × ${p.qty/p.lots||65}</div><div class="sm">${p.lots} lots = ${p.qty} units</div></div>
+        <div><div style="font-size:9px;color:#64748b;font-weight:700;margin-bottom:2px">STOP LOSS (−₹10)</div><div class="sm r">₹${fi(d.sl_price)}</div></div>
+        <div><div style="font-size:9px;color:#64748b;font-weight:700;margin-bottom:2px">TARGET (+₹25)</div><div class="sm g">₹${fi(d.tgt_price)}</div></div>
+        <div><div style="font-size:9px;color:#64748b;font-weight:700;margin-bottom:2px">ENTRY TIME</div><div class="sm">${p.entry_time}</div></div>
+        <div style="grid-column:span 3;margin-top:10px;padding-top:10px;border-top:1px solid #fed7aa;display:flex;gap:24px;font-size:12px;font-weight:700">
          <span>Live LTP: <span class="sm y" id="cur-ltp">₹—</span></span>
          <span>Unrealized P&L: <span class="sm" id="unr-pnl">₹—</span></span>
         </div>`;
@@ -1290,9 +1283,9 @@ async function tick(){
       if(ltpEl){
         ltpEl.textContent = '₹' + fi(d.current_ltp);
         pnlEl.textContent = (d.unrealized>=0?'+':'') + '₹' + fi(Math.abs(d.unrealized));
-        pnlEl.style.color = d.unrealized >= 0 ? '#4ade80' : '#fb7185';
+        pnlEl.style.color = d.unrealized >= 0 ? '#15803d' : '#be123c';
       }
-    }    
+    }  
     } else {
       document.getElementById('pc').style.display  = 'none';
       document.getElementById('npc').style.display = 'block';
@@ -1304,19 +1297,19 @@ async function tick(){
       document.getElementById('tt').style.display = 'table';
       document.getElementById('tb').innerHTML = d.trades.map(t => `
         <tr>
-          <td class="o">${t.symbol}</td>
+          <td class="o" style="font-weight:700">${t.symbol}</td>
           <td>${t.lots||1}</td>
-          <td class="${t.pnl>=0?'g':'r'}">${t.pnl>=0?'+':''}₹${fi(Math.abs(t.pnl))}</td>
+          <td class="${t.pnl>=0?'g':'r'}" style="font-weight:700">${t.pnl>=0?'+':''}₹${fi(Math.abs(t.pnl))}</td>
           <td><span class="source-badge ${t.source==='manual'?'src-manual':'src-auto'}">${t.source==='manual'?'🖐':'🤖'}</span></td>
-          <td style="color:#94a3b8;font-size:10px">${t.reason}</td>
-          <td style="color:#64748b">${t.entry_time}</td>
+          <td style="color:#475569;font-size:10px;font-weight:600">${t.reason}</td>
+          <td style="color:#64748b;font-size:10px;font-weight:600">${t.entry_time}</td>
         </tr>`).join('');
     }
 
     // activity log
     document.getElementById('lc').innerHTML = d.log.map(l => `
       <div class="lr l${l.level}">
-        <span style="color:#475569">${l.time} </span>${l.msg}
+        <span style="color:#64748b;font-weight:600">${l.time} </span><span style="font-weight:600;color:#334155">${l.msg}</span>
       </div>`).join('');
 
   } catch(e){ console.error(e); }

@@ -430,12 +430,19 @@ def compute_signal_and_trade():
                 open_trade(obj, signal, price, reason, source="auto")
         else:
             # only manage auto-opened positions automatically
-            if state["trade_source"] == "auto":
+           if state["trade_source"] == "auto":
                 ltp = get_option_ltp(obj, pos["symbol"])
                 if ltp:
+                    # Trailing SL & TP Logic
+                    if ltp > pos.get("highest_ltp", pos["entry_price"]):
+                        pos["highest_ltp"] = ltp
+                        pos["sl_price"]  = round(ltp - STOP_LOSS_PTS, 2)
+                        pos["tgt_price"] = round(ltp + TARGET_PTS, 2)
+
                     if ltp <= pos["sl_price"]:
-                        add_log(f"Stop loss hit! ₹{ltp:.2f}", "loss")
-                        close_trade(obj, "Stop Loss")
+                        result = "profit" if ltp > pos["entry_price"] else "loss"
+                        add_log(f"Trailing SL hit! ₹{ltp:.2f}", result)
+                        close_trade(obj, "Trailing SL")
                     elif ltp >= pos["tgt_price"]:
                         add_log(f"Target hit! ₹{ltp:.2f}", "profit")
                         close_trade(obj, "Target")
@@ -566,6 +573,7 @@ def open_trade(obj, signal, price, reason, source="auto", strike_override=None, 
         "qty"         : qty,
         "sl_price"    : sl_price,
         "tgt_price"   : tgt_price,
+        "highest_ltp" : ltp,
         "reason"      : reason,
         "entry_time"  : datetime.now(IST).strftime("%H:%M:%S"),
         "source"      : source,
@@ -1334,10 +1342,18 @@ def ltp_monitor():
                     state["current_ltp"]    = ltp
                     state["unrealized_pnl"] = round(
                         (ltp - pos["entry_price"]) * pos["qty"], 2)
+                    
+                    # Trailing SL & TP Logic
+                    if ltp > pos.get("highest_ltp", pos["entry_price"]):
+                        pos["highest_ltp"] = ltp
+                        pos["sl_price"]  = round(ltp - STOP_LOSS_PTS, 2)
+                        pos["tgt_price"] = round(ltp + TARGET_PTS, 2)
+
                     # check SL and target every second
                     if ltp <= pos["sl_price"]:
-                        add_log(f"SL hit! ₹{ltp:.2f}", "loss")
-                        close_trade(_obj[0], "Stop Loss")
+                        result = "profit" if ltp > pos["entry_price"] else "loss"
+                        add_log(f"Trailing SL hit! ₹{ltp:.2f}", result)
+                        close_trade(_obj[0], "Trailing SL")
                     elif ltp >= pos["tgt_price"]:
                         add_log(f"Target hit! ₹{ltp:.2f}", "profit")
                         close_trade(_obj[0], "Target")

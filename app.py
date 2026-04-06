@@ -39,9 +39,12 @@ SESSION_2_END   = (15,  0)
 # ═══════════════════════════════════════
 #   TICK BUFFERS
 # ═══════════════════════════════════════
-tick_buffer    = deque(maxlen=15)
-micro_buffer   = deque(maxlen=50)
-hist_buffer    = deque(maxlen=500)
+tick_buffer      = deque(maxlen=15)
+micro_buffer     = deque(maxlen=50)
+candle_5m_buffer = deque(maxlen=100) # NEW: Holds 5-minute candles for swing highs/lows
+current_5m_candle = None            # NEW: Tracks the live 5m candle
+
+ZONE_TOLERANCE   = 10.0             # Nifty points to create an "Area" instead of a line
 
 last_micro_time  = [time.time()]
 last_signal_time = [time.time()]
@@ -83,6 +86,15 @@ state = {
     "vol_ratio"    : 0.0,
     "current_ltp"  : 0.0,
     "unrealized_pnl": 0.0,
+    # ── new CPR & Power S&R fields ──
+    "pdh"          : 0.0,
+    "pdl"          : 0.0,
+    "cpr_p"        : 0.0,
+    "cpr_tc"       : 0.0,
+    "cpr_bc"       : 0.0,
+    "swing_high"   : 0.0,
+    "swing_low"    : 0.0,
+    "cpr_signal"   : "—",
     # ── new manual / bot control fields ──
     "bot_paused"     : False,
     "trade_source"   : "auto",
@@ -146,6 +158,47 @@ def connect_angel():
     return None
 
 # ═══════════════════════════════════════
+def fetch_daily_levels(obj):
+    """Fetches yesterday's NIFTY 50 Daily candle to calculate CPR and PDH/PDL."""
+    try:
+        # Get dates for the last 5 days to ensure we catch the last trading session
+        to_date = datetime.now(IST).strftime("%Y-%m-%d %H:%M")
+        from_date = (datetime.now(IST) - timedelta(days=5)).strftime("%Y-%m-%d 09:15")
+        
+        params = {
+            "exchange": NIFTY_EXCH,
+            "symboltoken": NIFTY_TOKEN,
+            "interval": "ONE_DAY",
+            "fromdate": from_date,
+            "todate": to_date
+        }
+        res = obj.getCandleData(params)
+        if res and res.get("status") and res.get("data"):
+            # The API returns [timestamp, open, high, low, close, volume]
+            # We want the second to last candle (yesterday)
+            data = res["data"]
+            if len(data) >= 2:
+                yest = data[-2]
+            else:
+                yest = data[-1] # Fallback
+                
+            state["pdh"] = float(yest[2])
+            state["pdl"] = float(yest[3])
+            pdc          = float(yest[4])
+            
+            # Calculate CPR
+            state["cpr_p"]  = round((state["pdh"] + state["pdl"] + pdc) / 3, 2)
+            state["cpr_bc"] = round((state["pdh"] + state["pdl"]) / 2, 2)
+            state["cpr_tc"] = round((state["cpr_p"] - state["cpr_bc"]) + state["cpr_p"], 2)
+            
+            # Ensure TC is the higher value and BC is the lower
+            if state["cpr_bc"] > state["cpr_tc"]:
+                state["cpr_tc"], state["cpr_bc"] = state["cpr_bc"], state["cpr_tc"]
+                
+            add_log(f"Loaded Levels: PDH={state['pdh']} PDL={state['pdl']} CPR Pivot={state['cpr_p']}", "success")
+    except Exception as e:
+        add_log(f"Failed to fetch historical levels for CPR: {e}", "error")
+# ═══════════════════════════════════════
 #   WEBSOCKET HANDLERS
 # ═══════════════════════════════════════
 def parse_ltp(raw):
@@ -198,6 +251,19 @@ def on_data(wsapp, message):
         tick = {"price": ltp, "volume": volume, "time": now}
         tick_buffer.append(tick)
         hist_buffer.append(tick)
+        # Build live 5-minute candles for Swing Highs/Lows
+        minute_block = now.minute - (now.minute % 5)
+        candle_time_str = now.replace(minute=minute_block, second=0, microsecond=0).strftime("%H:%M")
+        
+        global current_5m_candle
+        if current_5m_candle is None or current_5m_candle["time"] != candle_time_str:
+            if current_5m_candle is not None:
+                candle_5m_buffer.append(current_5m_candle)
+            current_5m_candle = {"time": candle_time_str, "high": ltp, "low": ltp, "close": ltp}
+        else:
+            current_5m_candle["high"] = max(current_5m_candle["high"], ltp)
+            current_5m_candle["low"]  = min(current_5m_candle["low"], ltp)
+            current_5m_candle["close"] = ltp
 
         state["nifty_price"] = round(ltp, 2)
         state["tick_count"]  += 1
@@ -259,19 +325,7 @@ def compute_micro_average():
     adx = calc_adx()
     state["adx_value"] = adx
 
-# ═══════════════════════════════════════
-#   VWAP CALCULATION
-# ═══════════════════════════════════════
-def calc_vwap():
-    if len(hist_buffer) < 10:
-        return 0.0
-    prices  = np.array([t["price"]  for t in hist_buffer])
-    volumes = np.array([t["volume"] for t in hist_buffer])
-    total_vol = np.sum(volumes)
-    if total_vol == 0:
-        return float(np.mean(prices))
-    vwap = np.sum(prices * volumes) / total_vol
-    return round(float(vwap), 2)
+ 
 
 # ═══════════════════════════════════════
 #   ADX CALCULATION
@@ -320,51 +374,88 @@ def calc_ema_micro():
         return ema9, ema21, "SELL"
 
 # ═══════════════════════════════════════
-#   VWAP SIGNAL
 # ═══════════════════════════════════════
-def calc_vwap_signal():
-    vwap  = calc_vwap()
+#   POWER S&R AND CPR LOGIC (3-Touch Verified)
+# ═══════════════════════════════════════
+def check_in_zone(price, level):
+    """Checks if price is inside an S&R 'Area' (± ZONE_TOLERANCE)"""
+    if level == 0: return False
+    return (level - ZONE_TOLERANCE) <= price <= (level + ZONE_TOLERANCE)
+
+def find_strong_zones(price_list, min_touches=3):
+    """Finds price areas where at least `min_touches` candles have clustered."""
+    strong_zones = []
+    used = set()
+    for i, p1 in enumerate(price_list):
+        if i in used: continue
+        cluster = [p1]
+        cluster_indices = {i}
+        # Check all other candles to see if they touched this same area
+        for j, p2 in enumerate(price_list):
+            if i != j and j not in used and abs(p1 - p2) <= ZONE_TOLERANCE:
+                cluster.append(p2)
+                cluster_indices.add(j)
+        
+        # If the area was tested 3 or more times, average the touches to find the center of the zone
+        if len(cluster) >= min_touches:
+            strong_zones.append(sum(cluster) / len(cluster))
+            used.update(cluster_indices)
+    return strong_zones
+
+def calc_power_sr_cpr_signal():
     price = state["nifty_price"]
-    state["vwap"] = vwap
-    if vwap == 0:
-        state["vwap_signal"] = "NEUTRAL — VWAP calculating"
-        return "NEUTRAL"
-    if price > vwap * 1.001:
-        state["vwap_signal"] = f"BUY — Price ₹{price:.0f} above VWAP ₹{vwap:.0f}"
-        return "BUY"
-    if price < vwap * 0.999:
-        state["vwap_signal"] = f"SELL — Price ₹{price:.0f} below VWAP ₹{vwap:.0f}"
-        return "SELL"
-    state["vwap_signal"] = f"NEUTRAL — At VWAP ₹{vwap:.0f}"
-    return "NEUTRAL"
+    
+    # 1. Update 5-minute Liquidity Zones (Requires 3 verified touches)
+    if len(candle_5m_buffer) >= 3:
+        highs = [c["high"] for c in candle_5m_buffer]
+        lows  = [c["low"] for c in candle_5m_buffer]
+        
+        strong_res_zones = find_strong_zones(highs, min_touches=3)
+        strong_sup_zones = find_strong_zones(lows, min_touches=3)
+        
+        # Update state for the UI Dashboard
+        state["support"]    = round(strong_sup_zones[-1], 2) if strong_sup_zones else state["pdl"]
+        state["resistance"] = round(strong_res_zones[-1], 2) if strong_res_zones else state["pdh"]
+    else:
+        strong_res_zones = []
+        strong_sup_zones = []
 
-# ═══════════════════════════════════════
-#   SUPPORT & RESISTANCE
-# ═══════════════════════════════════════
-def calc_sr_signal():
-    if len(micro_buffer) < 5:
-        state["sr_signal"] = "NEUTRAL — Not enough data"
-        return "NEUTRAL"
-    prices     = [m["avg_price"] for m in micro_buffer]
-    resistance = round(max(prices), 2)
-    support    = round(min(prices), 2)
-    price      = state["nifty_price"]
-    buffer     = (resistance - support) * 0.015
-    state["support"]    = support
-    state["resistance"] = resistance
-    if price >= resistance - buffer:
-        state["sr_signal"] = f"SELL — Near resistance ₹{resistance:.0f}"
-        return "SELL"
-    if price <= support + buffer:
-        state["sr_signal"] = f"BUY — Near support ₹{support:.0f}"
-        return "BUY"
-    mid = (resistance + support) / 2
-    if price > mid:
-        state["sr_signal"] = f"BUY — Above midzone ₹{mid:.0f}"
-        return "BUY"
-    state["sr_signal"] = f"SELL — Below midzone ₹{mid:.0f}"
-    return "SELL"
+    # 2. Check CPR Logic (Trend bias)
+    if price > state["cpr_tc"]:
+        state["cpr_signal"] = "BUY — Above CPR"
+        cpr_vote = "BUY"
+    elif price < state["cpr_bc"]:
+        state["cpr_signal"] = "SELL — Below CPR"
+        cpr_vote = "SELL"
+    else:
+        state["cpr_signal"] = "NEUTRAL — Inside CPR"
+        cpr_vote = "NEUTRAL"
 
+    # 3. Check Power S&R Area Logic
+    sr_vote = "NEUTRAL"
+    reason = "Price between zones"
+    
+    # Check Resistance Zones (PDH or ANY Strong 3-touch Swing High)
+    if check_in_zone(price, state["pdh"]):
+        sr_vote, reason = "SELL", "In Prev Day High Rejection Zone"
+    elif any(check_in_zone(price, res) for res in strong_res_zones):
+        sr_vote, reason = "SELL", "In Strong (3-Touch) Resistance Zone"
+        
+    # Check Support Zones (PDL or ANY Strong 3-touch Swing Low)
+    elif check_in_zone(price, state["pdl"]):
+        sr_vote, reason = "BUY", "In Prev Day Low Bounce Zone"
+    elif any(check_in_zone(price, sup) for sup in strong_sup_zones):
+        sr_vote, reason = "BUY", "In Strong (3-Touch) Support Zone"
+        
+    # Breakout logic (using PDH/PDL as ultimate boundaries)
+    elif price > state["pdh"] + ZONE_TOLERANCE:
+        sr_vote, reason = "BUY", "Breakout above PDH Zone"
+    elif price < state["pdl"] - ZONE_TOLERANCE:
+        sr_vote, reason = "SELL", "Breakdown below PDL Zone"
+
+    state["sr_signal"] = f"{sr_vote} — {reason}"
+    
+    return cpr_vote, sr_vote
 # ═══════════════════════════════════════
 #   COMBINED SIGNAL (2/3 + ADX filter)
 # ═══════════════════════════════════════
@@ -390,13 +481,12 @@ def compute_signal_and_trade():
             return
 
         _, _, ema_s  = calc_ema_micro()
-        vwap_s       = calc_vwap_signal()
-        sr_s         = calc_sr_signal()
+        cpr_s, sr_s  = calc_power_sr_cpr_signal() # New Power S&R and CPR
         adx          = calc_adx()
         state["adx_value"] = adx
 
-        buy_votes  = sum(1 for s in [ema_s, vwap_s, sr_s] if s == "BUY")
-        sell_votes = sum(1 for s in [ema_s, vwap_s, sr_s] if s == "SELL")
+        buy_votes  = sum(1 for s in [ema_s, cpr_s, sr_s] if s == "BUY")
+        sell_votes = sum(1 for s in [ema_s, cpr_s, sr_s] if s == "SELL")
         state["buy_votes"]  = buy_votes
         state["sell_votes"] = sell_votes
 

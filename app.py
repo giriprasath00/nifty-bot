@@ -250,7 +250,7 @@ def on_data(wsapp, message):
 
         tick = {"price": ltp, "volume": volume, "time": now}
         tick_buffer.append(tick)
-        hist_buffer.append(tick)
+        
         # Build live 5-minute candles for Swing Highs/Lows
         minute_block = now.minute - (now.minute % 5)
         candle_time_str = now.replace(minute=minute_block, second=0, microsecond=0).strftime("%H:%M")

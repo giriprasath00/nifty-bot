@@ -851,6 +851,9 @@ def bot_loop():
 # ═══════════════════════════════════════
 #   API — STATE
 # ═══════════════════════════════════════
+# ═══════════════════════════════════════
+#   API — STATE
+# ═══════════════════════════════════════
 @app.route("/api/state")
 def api_state():
     total = state["wins"] + state["losses"]
@@ -864,7 +867,7 @@ def api_state():
         "reason"       : state["reason"],
         "balance"      : round(state["balance"], 2),
         "total_pnl"    : round(state["total_pnl"], 2),
-        "pnl_pct"      : round(state["total_pnl"] / CAPITAL * 100, 2),
+        "pnl_pct"      : round(state["total_pnl"] / CAPITAL * 100, 2) if CAPITAL else 0,
         "wins"         : state["wins"],
         "losses"       : state["losses"],
         "winrate"      : round(state["wins"] / total * 100, 1) if total > 0 else 0,
@@ -872,29 +875,36 @@ def api_state():
         "trades"       : state["trades"][:20],
         "log"          : state["log"][:30],
         "last_update"  : state["last_update"],
-        "ema9"         : state["ema9"],
-        "ema21"        : state["ema21"],
-        "vwap"         : state["vwap"],
-        "adx"          : state["adx_value"],
-        "support"      : state["support"],
-        "resistance"   : state["resistance"],
-        "ema_signal"   : state["ema_signal"],
-        "vwap_signal"  : state["vwap_signal"],
-        "sr_signal"    : state["sr_signal"],
-        "buy_votes"    : state["buy_votes"],
-        "sell_votes"   : state["sell_votes"],
-        "in_session"   : state["in_session"],
-        "tick_count"   : state["tick_count"],
-        "micro_count"  : state["micro_count"],
+        "ema9"         : state.get("ema9", 0.0),
+        "ema21"        : state.get("ema21", 0.0),
+        "adx"          : state.get("adx_value", 0.0),
+        
+        # New CPR & Power S&R Data
+        "cpr_p"        : state.get("cpr_p", 0.0),
+        "cpr_tc"       : state.get("cpr_tc", 0.0),
+        "cpr_bc"       : state.get("cpr_bc", 0.0),
+        "pdh"          : state.get("pdh", 0.0),
+        "pdl"          : state.get("pdl", 0.0),
+        "support"      : state.get("support", 0.0),
+        "resistance"   : state.get("resistance", 0.0),
+        
+        "ema_signal"   : state.get("ema_signal", "—"),
+        "cpr_signal"   : state.get("cpr_signal", "—"),
+        "sr_signal"    : state.get("sr_signal", "—"),
+        
+        "buy_votes"    : state.get("buy_votes", 0),
+        "sell_votes"   : state.get("sell_votes", 0),
+        "in_session"   : state.get("in_session", False),
+        "tick_count"   : state.get("tick_count", 0),
+        "micro_count"  : state.get("micro_count", 0),
         "capital"      : CAPITAL,
         "sl_price"     : round(pos["sl_price"],  2) if pos else 0,
         "tgt_price"    : round(pos["tgt_price"], 2) if pos else 0,
-        "unrealized"   : state["unrealized_pnl"],
-        "current_ltp"  : state["current_ltp"],
-        "bot_paused"   : state["bot_paused"],
-        "trade_source" : state["trade_source"],
+        "unrealized"   : state.get("unrealized_pnl", 0.0),
+        "current_ltp"  : state.get("current_ltp", 0.0),
+        "bot_paused"   : state.get("bot_paused", False),
+        "trade_source" : state.get("trade_source", "auto"),
     })
-
 # ═══════════════════════════════════════
 #   API — BOT TOGGLE
 # ═══════════════════════════════════════
@@ -985,7 +995,7 @@ HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NSEAlgo v4 — WebSocket Bot (Light Mode)</title>
+<title>NSEAlgo v4 — Power S&R Bot (Light Mode)</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Sora:wght@700&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -1002,7 +1012,7 @@ body{background:#f8fafc;color:#1e293b;font-family:'JetBrains Mono',monospace;min
 .ct{font-size:9px;color:#64748b;letter-spacing:.12em;text-transform:uppercase;margin-bottom:7px;font-weight:700}
 .big{font-family:'Sora',sans-serif;font-size:24px;font-weight:700;color:#0f172a;letter-spacing:-.02em}
 .sm{font-size:12px;font-weight:700;color:#0f172a}
-.g{color:#15803d}.r{color:#be123c}.o{color:#ea580c}.y{color:#b45309}.pu{color:#6d28d9}
+.g{color:#15803d}.r{color:#be123c}.o{color:#ea580c}.y{color:#b45309}.pu{color:#6d28d9}.bl{color:#2563eb}
 .sig{display:inline-flex;align-items:center;gap:6px;padding:5px 13px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:.06em}
 .sbuy{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0}
 .ssell{background:#ffe4e6;color:#be123c;border:1px solid #fecdd3}
@@ -1069,7 +1079,7 @@ td{padding:6px 7px;border-bottom:1px solid #f1f5f9;color:#334155;font-weight:500
 </head>
 <body>
 <div class="hdr">
-  <div class="logo"><em>NSE</em>Algo <span style="font-size:10px;font-weight:600;color:#64748b;margin-left:6px">v4 · WebSocket · NIFTY F&O</span></div>
+  <div class="logo"><em>NSE</em>Algo <span style="font-size:10px;font-weight:600;color:#64748b;margin-left:6px">v4 · Power S&R Zones</span></div>
   <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
     <span id="li" style="font-size:10px;color:#475569;font-weight:600">Connecting...</span>
     <span id="ws" class="pill pill-r">WS Off</span>
@@ -1088,7 +1098,7 @@ td{padding:6px 7px;border-bottom:1px solid #f1f5f9;color:#334155;font-weight:500
       <div style="margin-top:8px;display:flex;gap:14px;font-size:11px;flex-wrap:wrap;font-weight:600">
         <span>EMA9: <span id="e9" class="o">—</span></span>
         <span>EMA21: <span id="e21" class="pu">—</span></span>
-        <span>VWAP: <span id="vwap" class="y">—</span></span>
+        <span>CPR Pivot: <span id="cpr-p" class="bl">—</span></span>
         <span>ADX: <span id="adx" class="g">—</span></span>
       </div>
       <div style="margin-top:6px;display:flex;gap:10px;font-size:10px;color:#64748b;font-weight:600">
@@ -1155,22 +1165,21 @@ td{padding:6px 7px;border-bottom:1px solid #f1f5f9;color:#334155;font-weight:500
   <div class="card" style="margin-bottom:11px">
     <div class="ct">Strategy breakdown — 3 signals voting every 3 minutes</div>
     <div class="srow">
-      <span class="o" style="font-size:11px;font-weight:700">EMA 9/21 (on 15-sec averages)</span>
+      <span class="o" style="font-size:11px;font-weight:700">EMA 9/21 (Trend)</span>
       <span id="ema-s" style="font-size:11px;color:#475569;font-weight:600">—</span>
     </div>
     <div class="srow">
-      <span class="y" style="font-size:11px;font-weight:700">VWAP (Volume Weighted Avg Price)</span>
-      <span id="vwap-s" style="font-size:11px;color:#475569;font-weight:600">—</span>
+      <span class="bl" style="font-size:11px;font-weight:700">Central Pivot Range (CPR)</span>
+      <span id="cpr-s" style="font-size:11px;color:#475569;font-weight:600">—</span>
     </div>
     <div class="srow">
-      <span class="pu" style="font-size:11px;font-weight:700">Support / Resistance</span>
+      <span class="pu" style="font-size:11px;font-weight:700">Power Zones (PDH/PDL & 3-Touch S&R)</span>
       <span id="sr-s" style="font-size:11px;color:#475569;font-weight:600">—</span>
     </div>
     <div style="display:flex;gap:16px;margin-top:10px;font-size:11px;flex-wrap:wrap;font-weight:600">
-      <span>Support: <span class="g" id="sup">—</span></span>
-      <span>Resistance: <span class="r" id="res">—</span></span>
-      <span>SL: <span class="r">−₹10/unit</span></span>
-      <span>TGT: <span class="g">+₹25/unit</span></span>
+      <span>Support Zone: <span class="g" id="sup">—</span> <span style="color:#94a3b8;font-size:9px">(±10 pts)</span></span>
+      <span>Resist Zone: <span class="r" id="res">—</span> <span style="color:#94a3b8;font-size:9px">(±10 pts)</span></span>
+      <span>CPR Pivot: <span class="bl" id="cpr-base">—</span></span>
       <span>ADX: <span class="y" id="adx2">—</span> <span style="color:#94a3b8">(≥25 = trending)</span></span>
     </div>
   </div>
@@ -1299,7 +1308,7 @@ async function tick(){
     document.getElementById('np').textContent   = '₹' + fi(d.nifty_price);
     document.getElementById('e9').textContent   = d.ema9  || '—';
     document.getElementById('e21').textContent  = d.ema21 || '—';
-    document.getElementById('vwap').textContent = d.vwap  ? '₹'+fi(d.vwap) : '—';
+    document.getElementById('cpr-p').textContent = d.cpr_p  ? '₹'+fi(d.cpr_p) : '—';
     document.getElementById('adx').textContent  = d.adx   ? d.adx.toFixed(1) : '—';
     document.getElementById('adx').style.color  = d.adx >= 25 ? '#15803d' : '#be123c';
     document.getElementById('tc').textContent   = d.tick_count  || 0;
@@ -1332,10 +1341,11 @@ async function tick(){
 
     // strategy signals
     document.getElementById('ema-s').textContent  = d.ema_signal  || '—';
-    document.getElementById('vwap-s').textContent = d.vwap_signal || '—';
+    document.getElementById('cpr-s').textContent  = d.cpr_signal || '—';
     document.getElementById('sr-s').textContent   = d.sr_signal   || '—';
     document.getElementById('sup').textContent    = d.support    ? '₹'+fi(d.support)    : '—';
     document.getElementById('res').textContent    = d.resistance ? '₹'+fi(d.resistance) : '—';
+    document.getElementById('cpr-base').textContent = d.cpr_p    ? '₹'+fi(d.cpr_p)      : '—';
     document.getElementById('adx2').textContent   = d.adx ? d.adx.toFixed(1) : '—';
     document.getElementById('adx2').style.color   = d.adx >= 25 ? '#15803d' : '#be123c';
 
@@ -1368,8 +1378,8 @@ async function tick(){
         <div><div style="font-size:9px;color:#64748b;font-weight:700;margin-bottom:2px">SYMBOL</div><div class="sm o">${p.symbol}</div></div>
         <div><div style="font-size:9px;color:#64748b;font-weight:700;margin-bottom:2px">ENTRY</div><div class="sm">₹${fi(p.entry_price)}</div></div>
         <div><div style="font-size:9px;color:#64748b;font-weight:700;margin-bottom:2px">LOTS × ${p.qty/p.lots||65}</div><div class="sm">${p.lots} lots = ${p.qty} units</div></div>
-        <div><div style="font-size:9px;color:#64748b;font-weight:700;margin-bottom:2px">STOP LOSS (−₹10)</div><div class="sm r">₹${fi(d.sl_price)}</div></div>
-        <div><div style="font-size:9px;color:#64748b;font-weight:700;margin-bottom:2px">TARGET (+₹25)</div><div class="sm g">₹${fi(d.tgt_price)}</div></div>
+        <div><div style="font-size:9px;color:#64748b;font-weight:700;margin-bottom:2px">TRAILING SL (−₹10)</div><div class="sm r">₹${fi(d.sl_price)}</div></div>
+        <div><div style="font-size:9px;color:#64748b;font-weight:700;margin-bottom:2px">DYNAMIC TGT (+₹20)</div><div class="sm g">₹${fi(d.tgt_price)}</div></div>
         <div><div style="font-size:9px;color:#64748b;font-weight:700;margin-bottom:2px">ENTRY TIME</div><div class="sm">${p.entry_time}</div></div>
         <div style="grid-column:span 3;margin-top:10px;padding-top:10px;border-top:1px solid #fed7aa;display:flex;gap:24px;font-size:12px;font-weight:700">
          <span>Live LTP: <span class="sm y" id="cur-ltp">₹—</span></span>

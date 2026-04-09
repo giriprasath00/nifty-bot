@@ -1099,7 +1099,6 @@ td{padding:6px 7px;border-bottom:1px solid #f1f5f9;color:#334155;font-weight:500
         <span>EMA9: <span id="e9" class="o">—</span></span>
         <span>EMA21: <span id="e21" class="pu">—</span></span>
         <span>CPR Pivot: <span id="cpr-p" class="bl">—</span></span>
-        <span>ADX: <span id="adx" class="g">—</span></span>
       </div>
       <div style="margin-top:6px;display:flex;gap:10px;font-size:10px;color:#64748b;font-weight:600">
         <span>Ticks: <span id="tc" class="g">0</span></span>
@@ -1107,7 +1106,7 @@ td{padding:6px 7px;border-bottom:1px solid #f1f5f9;color:#334155;font-weight:500
       </div>
     </div>
     <div class="card">
-      <div class="ct">Final signal (2/3 vote + ADX filter)</div>
+      <div class="ct">Final signal (2/3 Vote)</div>
       <div id="sb"><span class="sig shold">— WAITING</span></div>
       <div style="margin-top:8px;font-size:11px;color:#475569;font-weight:600" id="sr">—</div>
       <div style="display:flex;gap:8px;margin-top:10px">
@@ -1180,7 +1179,6 @@ td{padding:6px 7px;border-bottom:1px solid #f1f5f9;color:#334155;font-weight:500
       <span>Support Zone: <span class="g" id="sup">—</span> <span style="color:#94a3b8;font-size:9px">(±10 pts)</span></span>
       <span>Resist Zone: <span class="r" id="res">—</span> <span style="color:#94a3b8;font-size:9px">(±10 pts)</span></span>
       <span>CPR Pivot: <span class="bl" id="cpr-base">—</span></span>
-      <span>ADX: <span class="y" id="adx2">—</span> <span style="color:#94a3b8">(≥25 = trending)</span></span>
     </div>
   </div>
 
@@ -1309,8 +1307,6 @@ async function tick(){
     document.getElementById('e9').textContent   = d.ema9  || '—';
     document.getElementById('e21').textContent  = d.ema21 || '—';
     document.getElementById('cpr-p').textContent = d.cpr_p  ? '₹'+fi(d.cpr_p) : '—';
-    document.getElementById('adx').textContent  = d.adx   ? d.adx.toFixed(1) : '—';
-    document.getElementById('adx').style.color  = d.adx >= 25 ? '#15803d' : '#be123c';
     document.getElementById('tc').textContent   = d.tick_count  || 0;
     document.getElementById('mc').textContent   = d.micro_count || 0;
 
@@ -1346,8 +1342,6 @@ async function tick(){
     document.getElementById('sup').textContent    = d.support    ? '₹'+fi(d.support)    : '—';
     document.getElementById('res').textContent    = d.resistance ? '₹'+fi(d.resistance) : '—';
     document.getElementById('cpr-base').textContent = d.cpr_p    ? '₹'+fi(d.cpr_p)      : '—';
-    document.getElementById('adx2').textContent   = d.adx ? d.adx.toFixed(1) : '—';
-    document.getElementById('adx2').style.color   = d.adx >= 25 ? '#15803d' : '#be123c';
 
     // manual button state
     document.getElementById('btn-ce').disabled        = hasPos;

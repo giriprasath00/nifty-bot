@@ -633,7 +633,7 @@ def get_option_ltp(obj, symbol):
         pass
     return None
 
-def open_trade(obj, signal, price, reason, source="auto", strike_override=None, lots_override=None):
+def open_trade(obj, signal, price, reason, source="auto", strike_override=None, lots_override=None, product_type="intraday"):
     symbol = get_option_symbol(price, signal, strike_override)
     ltp    = get_option_ltp(obj, symbol)
     if ltp is None:
@@ -656,7 +656,7 @@ def open_trade(obj, signal, price, reason, source="auto", strike_override=None, 
     sl_price  = round(ltp - STOP_LOSS_PTS, 2)
     tgt_price = round(ltp + TARGET_PTS,    2)
 
-    state["balance"]      -= cost
+    state["balance"]       -= cost
     state["trade_source"]  = source
     state["position"]      = {
         "symbol"      : symbol,
@@ -673,6 +673,7 @@ def open_trade(obj, signal, price, reason, source="auto", strike_override=None, 
         "reason"      : reason,
         "entry_time"  : datetime.now(IST).strftime("%H:%M:%S"),
         "source"      : source,
+        "product_type": product_type, # NEW: Tracks Intraday vs Delivery
     }
     tag = "🤖 AUTO" if source == "auto" else "🖐 MANUAL"
     add_log(f"{tag} {'BUY CE' if signal=='BUY' else 'BUY PE'} {symbol} @ ₹{ltp:.2f} | {lots} lots | SL ₹{sl_price} | TGT ₹{tgt_price}", "buy" if signal=="BUY" else "sell")
@@ -845,7 +846,13 @@ def bot_loop():
                 pass
 
             if not is_market_hours() and state["position"]:
-                close_trade(obj, "Market Close")
+                if state["position"].get("product_type", "intraday") == "intraday":
+                    close_trade(obj, "Market Close (Intraday)")
+                else:
+                    # It's a delivery order, leave it open! Just log it once.
+                    if state["position"].get("overnight_logged") != True:
+                        add_log("Market Closed. Holding DELIVERY position overnight 🌙", "info")
+                        state["position"]["overnight_logged"] = True
 
             if not is_market_hours():
                 add_log("Market closed for the day ✓", "info")
@@ -935,6 +942,7 @@ def api_manual_buy_ce():
     data   = request.get_json(silent=True) or {}
     strike = data.get("strike")
     lots   = data.get("lots")
+    ptype  = data.get("product_type", "intraday") # Fetch choice, default intraday
     price  = state["nifty_price"]
 
     if not price:
@@ -946,8 +954,8 @@ def api_manual_buy_ce():
     except:
         return jsonify({"ok": False, "message": "Invalid strike or lots"})
 
-    ok, msg = open_trade(obj, "BUY", price, "Manual CE buy", source="manual",
-                         strike_override=strike, lots_override=lots)
+    ok, msg = open_trade(obj, "BUY", price, f"Manual CE ({ptype.upper()})", source="manual",
+                         strike_override=strike, lots_override=lots, product_type=ptype)
     return jsonify({"ok": ok, "message": msg})
 
 # ═══════════════════════════════════════
@@ -964,6 +972,7 @@ def api_manual_buy_pe():
     data   = request.get_json(silent=True) or {}
     strike = data.get("strike")
     lots   = data.get("lots")
+    ptype  = data.get("product_type", "intraday") # Fetch choice, default intraday
     price  = state["nifty_price"]
 
     if not price:
@@ -975,8 +984,8 @@ def api_manual_buy_pe():
     except:
         return jsonify({"ok": False, "message": "Invalid strike or lots"})
 
-    ok, msg = open_trade(obj, "SELL", price, "Manual PE buy", source="manual",
-                         strike_override=strike, lots_override=lots)
+    ok, msg = open_trade(obj, "SELL", price, f"Manual PE ({ptype.upper()})", source="manual",
+                         strike_override=strike, lots_override=lots, product_type=ptype)
     return jsonify({"ok": ok, "message": msg})
 
 # ═══════════════════════════════════════
@@ -1151,8 +1160,11 @@ td{padding:6px 7px;border-bottom:1px solid #f1f5f9;color:#334155;font-weight:500
     <div class="manual-title">🖐 Manual Trading</div>
     <div class="manual-row">
       <div class="inp-group">
-        <div class="inp-label">Strike Price (optional)</div>
-        <input class="inp" id="m-strike" type="number" placeholder="e.g. 24500" step="50">
+        <div class="inp-label">Type</div>
+        <select class="inp" id="m-type" style="width:105px; cursor:pointer;">
+          <option value="intraday">INTRADAY</option>
+          <option value="delivery">DELIVERY</option>
+        </select>
       </div>
       <div class="inp-group">
         <div class="inp-label">Lots</div>
@@ -1243,7 +1255,8 @@ async function toggleBot(){
 async function manualBuyCE(){
   const strike = document.getElementById('m-strike').value;
   const lots   = document.getElementById('m-lots').value;
-  const body   = {};
+  const ptype  = document.getElementById('m-type').value; // NEW
+  const body   = { product_type: ptype }; // NEW
   if(strike) body.strike = parseInt(strike);
   if(lots)   body.lots   = parseInt(lots);
   setBtnsLoading(true);
@@ -1255,7 +1268,8 @@ async function manualBuyCE(){
 async function manualBuyPE(){
   const strike = document.getElementById('m-strike').value;
   const lots   = document.getElementById('m-lots').value;
-  const body   = {};
+  const ptype  = document.getElementById('m-type').value; // NEW
+  const body   = { product_type: ptype }; // NEW
   if(strike) body.strike = parseInt(strike);
   if(lots)   body.lots   = parseInt(lots);
   setBtnsLoading(true);
@@ -1263,7 +1277,6 @@ async function manualBuyPE(){
   showToast(d.message, d.ok);
   setBtnsLoading(false);
 }
-
 async function manualClose(){
   if(!confirm('Close the current position at market price?')) return;
   setBtnsLoading(true);
@@ -1372,7 +1385,8 @@ async function tick(){
       pcEl.style.display = 'block';
       pcEl.className = 'card ' + (isManual ? 'pcard-manual' : 'pcard');
       document.getElementById('npc').style.display = 'none';
-      const srcBadge = `<span class="source-badge ${isManual?'src-manual':'src-auto'}">${isManual?'🖐 MANUAL':'🤖 AUTO'}</span>`;
+      const ptypeTag = p.product_type === 'delivery' ? '<span class="source-badge" style="background:#fef9c3;color:#a16207;border:1px solid #fef08a">🌙 DELIVERY</span>' : '';
+      const srcBadge = `<span class="source-badge ${isManual?'src-manual':'src-auto'}">${isManual?'🖐 MANUAL':'🤖 AUTO'}</span>${ptypeTag}`;
       document.getElementById('pc-title').innerHTML = '📂 Open position' + srcBadge;
       document.getElementById('pg').innerHTML = `
         <div><div style="font-size:9px;color:#64748b;font-weight:700;margin-bottom:2px">SYMBOL</div><div class="sm o">${p.symbol}</div></div>

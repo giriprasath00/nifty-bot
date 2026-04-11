@@ -413,12 +413,18 @@ def calc_power_sr_cpr_signal():
         strong_res_zones = find_strong_zones(highs, min_touches=3)
         strong_sup_zones = find_strong_zones(lows, min_touches=3)
         
-        # Update state for the UI Dashboard
-        state["support"]    = round(strong_sup_zones[-1], 2) if strong_sup_zones else state["pdl"]
-        state["resistance"] = round(strong_res_zones[-1], 2) if strong_res_zones else state["pdh"]
+        # UI FIX: Find the closest active zones to the current price
+        # Filter resistance (zones above current price) and support (zones below)
+        res_above = [z for z in strong_res_zones if z >= price]
+        sup_below = [z for z in strong_sup_zones if z <= price]
+        
+        state["resistance"] = round(min(res_above), 2) if res_above else state["pdh"]
+        state["support"]    = round(max(sup_below), 2) if sup_below else state["pdl"]
     else:
         strong_res_zones = []
         strong_sup_zones = []
+        state["resistance"] = state["pdh"]
+        state["support"]    = state["pdl"]
 
     # 2. Check CPR Logic (Trend bias)
     if price > state["cpr_tc"]:

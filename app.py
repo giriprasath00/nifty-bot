@@ -844,7 +844,7 @@ def bot_loop():
             except Exception:
                 pass
 
-           if not is_market_hours() and state["position"]:
+            if not is_market_hours() and state["position"]:
                 close_trade(obj, "Market Close")
             if not is_market_hours():
                 add_log("Market closed for the day ✓", "info")

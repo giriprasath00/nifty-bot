@@ -159,9 +159,8 @@ def connect_angel():
 
 # ═══════════════════════════════════════
 def fetch_daily_levels(obj):
-    """Fetches yesterday's NIFTY 50 Daily candle to calculate CPR and PDH/PDL."""
+    """Fetches yesterday's NIFTY 50 Daily candle to calculate CPR and R1-R4 / S1-S4."""
     try:
-        # Get dates for the last 5 days to ensure we catch the last trading session
         to_date = datetime.now(IST).strftime("%Y-%m-%d %H:%M")
         from_date = (datetime.now(IST) - timedelta(days=5)).strftime("%Y-%m-%d 09:15")
         
@@ -174,13 +173,8 @@ def fetch_daily_levels(obj):
         }
         res = obj.getCandleData(params)
         if res and res.get("status") and res.get("data"):
-            # The API returns [timestamp, open, high, low, close, volume]
-            # We want the second to last candle (yesterday)
             data = res["data"]
-            if len(data) >= 2:
-                yest = data[-2]
-            else:
-                yest = data[-1] # Fallback
+            yest = data[-2] if len(data) >= 2 else data[-1]
                 
             state["pdh"] = float(yest[2])
             state["pdl"] = float(yest[3])
@@ -191,13 +185,32 @@ def fetch_daily_levels(obj):
             state["cpr_bc"] = round((state["pdh"] + state["pdl"]) / 2, 2)
             state["cpr_tc"] = round((state["cpr_p"] - state["cpr_bc"]) + state["cpr_p"], 2)
             
-            # Ensure TC is the higher value and BC is the lower
             if state["cpr_bc"] > state["cpr_tc"]:
                 state["cpr_tc"], state["cpr_bc"] = state["cpr_bc"], state["cpr_tc"]
                 
-            add_log(f"Loaded Levels: PDH={state['pdh']} PDL={state['pdl']} CPR Pivot={state['cpr_p']}", "success")
+            # ═══════════════════════════════════════
+            #  NEW: Standard Pivot Points (R1-R4, S1-S4)
+            # ═══════════════════════════════════════
+            h = state["pdh"]
+            l = state["pdl"]
+            p = state["cpr_p"]
+            rng = h - l
+            
+            state["r1"] = round((2 * p) - l, 2)
+            state["s1"] = round((2 * p) - h, 2)
+            
+            state["r2"] = round(p + rng, 2)
+            state["s2"] = round(p - rng, 2)
+            
+            state["r3"] = round(h + 2 * (p - l), 2)
+            state["s3"] = round(l - 2 * (h - p), 2)
+            
+            state["r4"] = round(state["r3"] + rng, 2)
+            state["s4"] = round(state["s3"] - rng, 2)
+            
+            add_log(f"Locked 9:15 AM Levels: CPR, S1-S4, R1-R4 Calculated ✓", "success")
     except Exception as e:
-        add_log(f"Failed to fetch historical levels for CPR: {e}", "error")
+        add_log(f"Failed to fetch historical levels: {e}", "error")
 # ═══════════════════════════════════════
 #   WEBSOCKET HANDLERS
 # ═══════════════════════════════════════
@@ -885,9 +898,20 @@ def api_state():
         "adx"          : state.get("adx_value", 0.0),
         
         # New CPR & Power S&R Data
+        # New CPR & Power S&R Data
         "cpr_p"        : state.get("cpr_p", 0.0),
         "cpr_tc"       : state.get("cpr_tc", 0.0),
         "cpr_bc"       : state.get("cpr_bc", 0.0),
+        
+        # Adding R1-R4 and S1-S4
+        "r4"           : state.get("r4", 0.0),
+        "r3"           : state.get("r3", 0.0),
+        "r2"           : state.get("r2", 0.0),
+        "r1"           : state.get("r1", 0.0),
+        "s1"           : state.get("s1", 0.0),
+        "s2"           : state.get("s2", 0.0),
+        "s3"           : state.get("s3", 0.0),
+        "s4"           : state.get("s4", 0.0),
         "pdh"          : state.get("pdh", 0.0),
         "pdl"          : state.get("pdl", 0.0),
         "support"      : state.get("support", 0.0),
@@ -1169,6 +1193,35 @@ td{padding:6px 7px;border-bottom:1px solid #f1f5f9;color:#334155;font-weight:500
 
   <div class="card" style="margin-bottom:11px">
     <div class="ct">Strategy breakdown — 3 signals voting every 3 minutes</div>
+    <div class="card" style="margin-bottom:11px">
+    <div class="ct">Daily Key Levels (Calculated at 9:15 AM)</div>
+    <div style="display:flex; justify-content: space-between; align-items: stretch; gap: 10px; font-size:11px; font-weight:600; flex-wrap:wrap">
+      
+      <div style="flex:1; background:#fef2f2; border:1px solid #fee2e2; border-radius:6px; padding:8px">
+        <div style="color:#be123c; margin-bottom:4px; font-size:9px; letter-spacing:.1em">RESISTANCE</div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:2px"><span>R4</span> <span id="val-r4">—</span></div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:2px"><span>R3</span> <span id="val-r3">—</span></div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:2px"><span>R2</span> <span id="val-r2">—</span></div>
+        <div style="display:flex; justify-content:space-between"><span>R1</span> <span id="val-r1">—</span></div>
+      </div>
+
+      <div style="flex:1; background:#eff6ff; border:1px solid #dbeafe; border-radius:6px; padding:8px">
+        <div style="color:#1d4ed8; margin-bottom:4px; font-size:9px; letter-spacing:.1em">CENTRAL PIVOT RANGE</div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:2px"><span>Top Central</span> <span id="val-tc">—</span></div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:2px; font-weight:700"><span>PIVOT (P)</span> <span id="val-p">—</span></div>
+        <div style="display:flex; justify-content:space-between"><span>Bottom Central</span> <span id="val-bc">—</span></div>
+      </div>
+
+      <div style="flex:1; background:#f0fdf4; border:1px solid #dcfce7; border-radius:6px; padding:8px">
+        <div style="color:#15803d; margin-bottom:4px; font-size:9px; letter-spacing:.1em">SUPPORT</div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:2px"><span>S1</span> <span id="val-s1">—</span></div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:2px"><span>S2</span> <span id="val-s2">—</span></div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:2px"><span>S3</span> <span id="val-s3">—</span></div>
+        <div style="display:flex; justify-content:space-between"><span>S4</span> <span id="val-s4">—</span></div>
+      </div>
+
+    </div>
+  </div>
     <div class="srow">
       <span class="o" style="font-size:11px;font-weight:700">EMA 9/21 (Trend)</span>
       <span id="ema-s" style="font-size:11px;color:#475569;font-weight:600">—</span>
@@ -1348,6 +1401,28 @@ async function tick(){
     document.getElementById('sup').textContent    = d.support    ? '₹'+fi(d.support)    : '—';
     document.getElementById('res').textContent    = d.resistance ? '₹'+fi(d.resistance) : '—';
     document.getElementById('cpr-base').textContent = d.cpr_p    ? '₹'+fi(d.cpr_p)      : '—';
+    // strategy signals
+    document.getElementById('ema-s').textContent  = d.ema_signal  || '—';
+    document.getElementById('cpr-s').textContent  = d.cpr_signal || '—';
+    document.getElementById('sr-s').textContent   = d.sr_signal   || '—';
+    document.getElementById('sup').textContent    = d.support    ? '₹'+fi(d.support)    : '—';
+    document.getElementById('res').textContent    = d.resistance ? '₹'+fi(d.resistance) : '—';
+    document.getElementById('cpr-base').textContent = d.cpr_p    ? '₹'+fi(d.cpr_p)      : '—';
+
+    // Update Daily Levels UI (NEW 9:15 AM LEVELS)
+    document.getElementById('val-r4').textContent = d.r4 ? '₹'+fi(d.r4) : '—';
+    document.getElementById('val-r3').textContent = d.r3 ? '₹'+fi(d.r3) : '—';
+    document.getElementById('val-r2').textContent = d.r2 ? '₹'+fi(d.r2) : '—';
+    document.getElementById('val-r1').textContent = d.r1 ? '₹'+fi(d.r1) : '—';
+    
+    document.getElementById('val-tc').textContent = d.cpr_tc ? '₹'+fi(d.cpr_tc) : '—';
+    document.getElementById('val-p').textContent  = d.cpr_p  ? '₹'+fi(d.cpr_p)  : '—';
+    document.getElementById('val-bc').textContent = d.cpr_bc ? '₹'+fi(d.cpr_bc) : '—';
+    
+    document.getElementById('val-s1').textContent = d.s1 ? '₹'+fi(d.s1) : '—';
+    document.getElementById('val-s2').textContent = d.s2 ? '₹'+fi(d.s2) : '—';
+    document.getElementById('val-s3').textContent = d.s3 ? '₹'+fi(d.s3) : '—';
+    document.getElementById('val-s4').textContent = d.s4 ? '₹'+fi(d.s4) : '—';
 
     // manual button state
     document.getElementById('btn-ce').disabled        = hasPos;

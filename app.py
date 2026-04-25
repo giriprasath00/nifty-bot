@@ -1538,11 +1538,18 @@ def ltp_monitor():
             pass
         time.sleep(1)
 
-threading.Thread(target=ltp_monitor, daemon=True).start()
-threading.Thread(target=bot_loop, daemon=True).start()
+ 
 
  
 
+# REMOVE the two lines that were sitting outside here
+
 if __name__ == "__main__":
+    # 1. Start background threads inside the main block
+    threading.Thread(target=ltp_monitor, daemon=True).start()
+    threading.Thread(target=bot_loop, daemon=True).start()
+    
+    # 2. Get port and start Flask
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    print(f"DEBUG: Starting Flask on port {port}")
+    app.run(host="0.0.0.0", port=port, use_reloader=False) # use_reloader=False prevents double-threading

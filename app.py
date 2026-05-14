@@ -501,6 +501,21 @@ def calc_power_sr_cpr_signal():
 # ═══════════════════════════════════════
 def compute_signal_and_trade():
     try:
+        # Move the Tuesday pause logic here where 'return' is valid
+        if is_bot_paused():
+            state["signal"] = "AUTO-PAUSED"
+            state["reason"] = "Tuesday Expiry: Paused after 13:30"
+            state["bot_paused"] = True
+            return  # This now works because it's inside a function
+
+        # skip auto-trade if bot is manually paused
+        if state["bot_paused"]:
+            state["signal"] = "BOT PAUSED"
+            state["reason"] = "Manual mode active"
+            return
+            
+        # ... rest of your signal logic
+    try:
         # skip auto-trade if bot is paused
         if state["bot_paused"]:
             state["signal"] = "BOT PAUSED"

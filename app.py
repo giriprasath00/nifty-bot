@@ -42,7 +42,7 @@ TOTP_TOKEN  = os.environ.get("TOTP_TOKEN",  "")
 # ═══════════════════════════════════════
 #   SETTINGS
 # ═══════════════════════════════════════
-CAPITAL          = 1000000
+CAPITAL          = 250000000
 LOT_SIZE         = 65          # NIFTY 50 lot size as per your broker
 STOP_LOSS_PTS    = 10
 TARGET_PTS       = 25

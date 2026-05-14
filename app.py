@@ -6,6 +6,27 @@ from datetime import datetime, timedelta,date
 from collections import deque
 import numpy as np
 import pytz
+ 
+
+def is_bot_paused():
+    # Set timezone to IST
+    IST = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(IST)
+    
+    # Tuesday is weekday 1 (Monday is 0)
+    # Check if it is Tuesday AND the time is 13:30 or later
+    if now.weekday() == 1: 
+        current_time = now.strftime("%H:%M")
+        if current_time >= "13:30":
+            return True
+    return False
+
+# In your main trading loop:
+if is_bot_paused():
+    print("Tuesday Afternoon Pause Active: No new trades.")
+    # Update your dashboard status
+    bot_status = "AUTO-PAUSED (TUESDAY)"
+    return
 
 IST = pytz.timezone("Asia/Kolkata")
 app = Flask(__name__)

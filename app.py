@@ -2,16 +2,26 @@ from flask import Flask, jsonify, render_template_string, request
 from SmartApi import SmartConnect
 from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 import pyotp, pandas as pd, threading, time, os, requests, json
-from datetime import datetime, timedelta,date
+from datetime import datetime, timedelta, date
 from collections import deque
 import numpy as np
 import pytz
- 
-
- 
 
 IST = pytz.timezone("Asia/Kolkata")
 app = Flask(__name__)
+
+# ═══════════════════════════════════════
+#   TUESDAY AUTO-PAUSE LOGIC
+# ═══════════════════════════════════════
+def is_bot_paused():
+    """Checks if it is Tuesday (Nifty Expiry Day) after 1:30 PM IST."""
+    now = datetime.now(IST)
+    # 1 is Tuesday in the weekday() function (Monday=0, Tuesday=1)
+    if now.weekday() == 1: 
+        current_time = now.strftime("%H:%M")
+        if current_time >= "13:30":
+            return True
+    return False
 
 # ═══════════════════════════════════════
 #   CREDENTIALS
@@ -24,7 +34,7 @@ TOTP_TOKEN  = os.environ.get("TOTP_TOKEN",  "")
 # ═══════════════════════════════════════
 #   SETTINGS
 # ═══════════════════════════════════════
-CAPITAL          = 250000000
+CAPITAL          = 2000000     # Fixed to 20 Lakhs
 LOT_SIZE         = 65          # NIFTY 50 lot size as per your broker
 STOP_LOSS_PTS    = 10
 TARGET_PTS       = 25
@@ -44,14 +54,14 @@ SESSION_2_END   = (15,  0)
 # ═══════════════════════════════════════
 tick_buffer      = deque(maxlen=15)
 micro_buffer     = deque(maxlen=50)
-candle_5m_buffer = deque(maxlen=100) # NEW: Holds 5-minute candles for swing highs/lows
-current_5m_candle = None            # NEW: Tracks the live 5m candle
+candle_5m_buffer = deque(maxlen=100) 
+current_5m_candle = None            
 
-ZONE_TOLERANCE   = 10.0             # Nifty points to create an "Area" instead of a line
+ZONE_TOLERANCE   = 10.0             
 
 last_micro_time  = [time.time()]
 last_signal_time = [time.time()]
-last_reset_date  = [None]        # tracks which calendar date we last reset stats
+last_reset_date  = [None]        
 
 # ═══════════════════════════════════════
 #   SHARED STATE
@@ -89,7 +99,6 @@ state = {
     "vol_ratio"    : 0.0,
     "current_ltp"  : 0.0,
     "unrealized_pnl": 0.0,
-    # ── new CPR & Power S&R fields ──
     "pdh"          : 0.0,
     "pdl"          : 0.0,
     "cpr_p"        : 0.0,
@@ -98,10 +107,9 @@ state = {
     "swing_high"   : 0.0,
     "swing_low"    : 0.0,
     "cpr_signal"   : "—",
-    # ── new manual / bot control fields ──
     "bot_paused"     : False,
     "trade_source"   : "auto",
-    "last_tick_time" : 0.0,     # epoch time of last received WS message
+    "last_tick_time" : 0.0,     
 }
 
 def add_log(msg, level="info"):
@@ -124,7 +132,6 @@ def load_symbol_master():
             if item.get("exch_seg") == "NFO" and "NIFTY" in item.get("symbol", ""):
                 nfo_symbols[item["symbol"]] = item["token"]
         add_log(f"Loaded {len(nfo_symbols)} NIFTY NFO symbols ✓", "success")
-        # Log the expiry being used and a few sample symbols so we can verify format
         expiry = get_nearest_expiry()
         samples = [s for s in nfo_symbols if expiry in s][:6]
         add_log(f"Target expiry: {expiry} | Samples: {samples}", "info")
@@ -162,7 +169,6 @@ def connect_angel():
 
 # ═══════════════════════════════════════
 def fetch_daily_levels(obj):
-    """Fetches yesterday's NIFTY 50 Daily candle to calculate CPR and R1-R4 / S1-S4."""
     try:
         to_date = datetime.now(IST).strftime("%Y-%m-%d %H:%M")
         from_date = (datetime.now(IST) - timedelta(days=5)).strftime("%Y-%m-%d 09:15")
@@ -183,7 +189,6 @@ def fetch_daily_levels(obj):
             state["pdl"] = float(yest[3])
             pdc          = float(yest[4])
             
-            # Calculate CPR
             state["cpr_p"]  = round((state["pdh"] + state["pdl"] + pdc) / 3, 2)
             state["cpr_bc"] = round((state["pdh"] + state["pdl"]) / 2, 2)
             state["cpr_tc"] = round((state["cpr_p"] - state["cpr_bc"]) + state["cpr_p"], 2)
@@ -191,9 +196,6 @@ def fetch_daily_levels(obj):
             if state["cpr_bc"] > state["cpr_tc"]:
                 state["cpr_tc"], state["cpr_bc"] = state["cpr_bc"], state["cpr_tc"]
                 
-            # ═══════════════════════════════════════
-            #  NEW: Standard Pivot Points (R1-R4, S1-S4)
-            # ═══════════════════════════════════════
             h = state["pdh"]
             l = state["pdl"]
             p = state["cpr_p"]
@@ -201,31 +203,26 @@ def fetch_daily_levels(obj):
             
             state["r1"] = round((2 * p) - l, 2)
             state["s1"] = round((2 * p) - h, 2)
-            
             state["r2"] = round(p + rng, 2)
             state["s2"] = round(p - rng, 2)
-            
             state["r3"] = round(h + 2 * (p - l), 2)
             state["s3"] = round(l - 2 * (h - p), 2)
-            
             state["r4"] = round(state["r3"] + rng, 2)
             state["s4"] = round(state["s3"] - rng, 2)
             
             add_log(f"Locked 9:15 AM Levels: CPR, S1-S4, R1-R4 Calculated ✓", "success")
     except Exception as e:
         add_log(f"Failed to fetch historical levels: {e}", "error")
+
 # ═══════════════════════════════════════
 #   WEBSOCKET HANDLERS
 # ═══════════════════════════════════════
 def parse_ltp(raw):
-    """Angel One sends price in paise (integer). Convert to rupees."""
     if raw is None:
         return 0.0
     raw = float(raw)
-    # Typical NIFTY range: 15000–30000. If raw > 1000000 it's paise.
     if raw > 1_000_000:
         return raw / 100.0
-    # Some feeds already send in rupees with decimals
     return raw
 
 def on_data(wsapp, message):
@@ -233,13 +230,11 @@ def on_data(wsapp, message):
         if not isinstance(message, dict):
             return
 
-        state["last_tick_time"] = time.time()   # always stamp on any message
+        state["last_tick_time"] = time.time()   
 
-        # Log first 5 raw ticks so we can debug price format
         if state["tick_count"] < 5:
             add_log(f"Raw tick #{state['tick_count']}: {message}", "info")
 
-        # Try every known field name Angel One uses for LTP
         raw = (message.get("last_traded_price") or
                message.get("ltp") or
                message.get("close_price") or 0)
@@ -252,14 +247,12 @@ def on_data(wsapp, message):
 
         now = datetime.now(IST).replace(tzinfo=None)
 
-        # Always update market_open status on every tick
         mo_start = now.replace(hour=9,  minute=15, second=0, microsecond=0)
         mo_end   = now.replace(hour=15, minute=20, second=0, microsecond=0)
         state["market_open"] = (mo_start <= now <= mo_end) and now.weekday() < 5
         state["last_update"] = now.strftime("%H:%M:%S")
 
         if ltp <= 100:
-            # Price too low to be NIFTY — log and skip but don't drop silently
             if state["tick_count"] < 5:
                 add_log(f"⚠ Suspicious LTP={ltp} from raw={raw} — skipping tick", "error")
             return
@@ -267,7 +260,6 @@ def on_data(wsapp, message):
         tick = {"price": ltp, "volume": volume, "time": now}
         tick_buffer.append(tick)
         
-        # Build live 5-minute candles for Swing Highs/Lows
         minute_block = now.minute - (now.minute % 5)
         candle_time_str = now.replace(minute=minute_block, second=0, microsecond=0).strftime("%H:%M")
         
@@ -295,17 +287,15 @@ def on_data(wsapp, message):
     except Exception as e:
         add_log(f"on_data error: {e}", "error")
 
-_ws_ref        = [None]          # holds current WebSocket instance for on_open subscribe
-_ws_token_list = [None]          # holds token list for on_open subscribe
+_ws_ref        = [None]         
+_ws_token_list = [None]         
 
 def on_open(wsapp):
     state["ws_connected"] = True
     add_log("WebSocket connected — subscribing to NIFTY ticks...", "success")
-    # Subscribe is called on the SmartWebSocketV2 instance (_ws_ref),
-    # NOT on the raw wsapp/WebSocketApp object passed to this callback
     def do_subscribe():
         try:
-            time.sleep(0.5)  # brief pause to let handshake settle
+            time.sleep(0.5)  
             _ws_ref[0].subscribe("abc123", 3, _ws_token_list[0])
             add_log("Subscribed to NIFTY 50 feed ✓", "success")
         except Exception as e:
@@ -340,8 +330,6 @@ def compute_micro_average():
     state["micro_count"] += 1
     adx = calc_adx()
     state["adx_value"] = adx
-
- 
 
 # ═══════════════════════════════════════
 #   ADX CALCULATION
@@ -390,29 +378,24 @@ def calc_ema_micro():
         return ema9, ema21, "SELL"
 
 # ═══════════════════════════════════════
-# ═══════════════════════════════════════
 #   POWER S&R AND CPR LOGIC (3-Touch Verified)
 # ═══════════════════════════════════════
 def check_in_zone(price, level):
-    """Checks if price is inside an S&R 'Area' (± ZONE_TOLERANCE)"""
     if level == 0: return False
     return (level - ZONE_TOLERANCE) <= price <= (level + ZONE_TOLERANCE)
 
 def find_strong_zones(price_list, min_touches=3):
-    """Finds price areas where at least `min_touches` candles have clustered."""
     strong_zones = []
     used = set()
     for i, p1 in enumerate(price_list):
         if i in used: continue
         cluster = [p1]
         cluster_indices = {i}
-        # Check all other candles to see if they touched this same area
         for j, p2 in enumerate(price_list):
             if i != j and j not in used and abs(p1 - p2) <= ZONE_TOLERANCE:
                 cluster.append(p2)
                 cluster_indices.add(j)
         
-        # If the area was tested 3 or more times, average the touches to find the center of the zone
         if len(cluster) >= min_touches:
             strong_zones.append(sum(cluster) / len(cluster))
             used.update(cluster_indices)
@@ -421,7 +404,6 @@ def find_strong_zones(price_list, min_touches=3):
 def calc_power_sr_cpr_signal():
     price = state["nifty_price"]
     
-    # 1. Update 5-minute Liquidity Zones (Requires 3 verified touches)
     if len(candle_5m_buffer) >= 3:
         highs = [c["high"] for c in candle_5m_buffer]
         lows  = [c["low"] for c in candle_5m_buffer]
@@ -429,8 +411,6 @@ def calc_power_sr_cpr_signal():
         strong_res_zones = find_strong_zones(highs, min_touches=3)
         strong_sup_zones = find_strong_zones(lows, min_touches=3)
         
-        # UI FIX: Find the closest active zones to the current price
-        # Filter resistance (zones above current price) and support (zones below)
         res_above = [z for z in strong_res_zones if z >= price]
         sup_below = [z for z in strong_sup_zones if z <= price]
         
@@ -442,7 +422,6 @@ def calc_power_sr_cpr_signal():
         state["resistance"] = state["pdh"]
         state["support"]    = state["pdl"]
 
-    # 2. Check CPR Logic (Trend bias)
     if price > state["cpr_tc"]:
         state["cpr_signal"] = "BUY — Above CPR"
         cpr_vote = "BUY"
@@ -453,23 +432,19 @@ def calc_power_sr_cpr_signal():
         state["cpr_signal"] = "NEUTRAL — Inside CPR"
         cpr_vote = "NEUTRAL"
 
-    # 3. Check Power S&R Area Logic
     sr_vote = "NEUTRAL"
     reason = "Price between zones"
     
-    # Check Resistance Zones (PDH or ANY Strong 3-touch Swing High)
     if check_in_zone(price, state["pdh"]):
         sr_vote, reason = "SELL", "In Prev Day High Rejection Zone"
     elif any(check_in_zone(price, res) for res in strong_res_zones):
         sr_vote, reason = "SELL", "In Strong (3-Touch) Resistance Zone"
         
-    # Check Support Zones (PDL or ANY Strong 3-touch Swing Low)
     elif check_in_zone(price, state["pdl"]):
         sr_vote, reason = "BUY", "In Prev Day Low Bounce Zone"
     elif any(check_in_zone(price, sup) for sup in strong_sup_zones):
         sr_vote, reason = "BUY", "In Strong (3-Touch) Support Zone"
         
-    # Breakout logic (using PDH/PDL as ultimate boundaries)
     elif price > state["pdh"] + ZONE_TOLERANCE:
         sr_vote, reason = "BUY", "Breakout above PDH Zone"
     elif price < state["pdl"] - ZONE_TOLERANCE:
@@ -478,32 +453,26 @@ def calc_power_sr_cpr_signal():
     state["sr_signal"] = f"{sr_vote} — {reason}"
     
     return cpr_vote, sr_vote
+
 # ═══════════════════════════════════════
 #   COMBINED SIGNAL (2/3 + ADX filter)
 # ═══════════════════════════════════════
 def compute_signal_and_trade():
     try:
-        # Move the Tuesday pause logic here where 'return' is valid
+        # 1. Tuesday Pause Logic
         if is_bot_paused():
             state["signal"] = "AUTO-PAUSED"
-            state["reason"] = "Tuesday Expiry: Paused after 13:30"
+            state["reason"] = "Tuesday Expiry Risk: Paused after 13:30"
             state["bot_paused"] = True
-            return  # This now works because it's inside a function
+            return
 
-        # skip auto-trade if bot is manually paused
-        if state["bot_paused"]:
+        # 2. Manual Pause Logic
+        if state.get("bot_paused"):
             state["signal"] = "BOT PAUSED"
             state["reason"] = "Manual mode active"
             return
             
-        # ... rest of your signal logic
-    try:
-        # skip auto-trade if bot is paused
-        if state["bot_paused"]:
-            state["signal"] = "BOT PAUSED"
-            state["reason"] = "Manual mode active — resume bot to enable auto-trading"
-            return
-
+        # 3. Market Hours Check
         if not is_market_hours():
             state["signal"] = "MARKET CLOSED"
             state["reason"] = "Mon–Fri 9:15 AM – 3:20 PM IST"
@@ -518,7 +487,7 @@ def compute_signal_and_trade():
             return
 
         _, _, ema_s  = calc_ema_micro()
-        cpr_s, sr_s  = calc_power_sr_cpr_signal() # New Power S&R and CPR
+        cpr_s, sr_s  = calc_power_sr_cpr_signal() 
         adx          = calc_adx()
         state["adx_value"] = adx
 
@@ -556,11 +525,9 @@ def compute_signal_and_trade():
             if signal in ("BUY", "SELL"):
                 open_trade(obj, signal, price, reason, source="auto")
         else:
-            # only manage auto-opened positions automatically
-           if state["trade_source"] == "auto":
+            if state["trade_source"] == "auto":
                 ltp = get_option_ltp(obj, pos["symbol"])
                 if ltp:
-                    # Trailing SL & TP Logic
                     if ltp > pos.get("highest_ltp", pos["entry_price"]):
                         pos["highest_ltp"] = ltp
                         pos["sl_price"]  = round(ltp - STOP_LOSS_PTS, 2)
@@ -587,24 +554,19 @@ def get_nearest_expiry():
     today = datetime.now(IST).replace(tzinfo=None)
     today_str = today.strftime("%d%b%y").upper()
     
-    # Find all NIFTY expiries available in symbol master
     expiry_dates = set()
     for symbol in nfo_symbols:
         if symbol.startswith("NIFTY") and ("CE" in symbol or "PE" in symbol):
-            # Extract expiry part (characters 5-12)
             try:
-                exp = symbol[5:12]  # e.g. "30MAR26"
+                exp = symbol[5:12] 
                 expiry_dates.add(exp)
             except:
                 pass
     
     if not expiry_dates:
-        # fallback to simple calculation
         days = (1 - today.weekday()) % 7 or 7
         return (today + timedelta(days=days)).strftime("%d%b%y").upper()
     
-    # Convert to dates and find nearest future expiry
-    from datetime import date
     future = []
     for e in expiry_dates:
         try:
@@ -621,17 +583,14 @@ def get_nearest_expiry():
     return nearest[1]
     
 def find_closest_symbol(price, otype):
-    """Search symbol master for the closest available strike to price."""
     expiry = get_nearest_expiry()
     target_strike = round(price / 50) * 50
-    # Try ±500 in steps of 50
     for offset in range(0, 600, 50):
         for delta in ([0] if offset == 0 else [offset, -offset]):
             strike = target_strike + delta
             sym = f"NIFTY{expiry}{strike}{otype}"
             if sym in nfo_symbols:
                 return sym, strike
-    # Fallback: log available NIFTY symbols for this expiry to help debug
     sample = [s for s in nfo_symbols if expiry in s and otype in s][:5]
     add_log(f"No symbol found near {target_strike} {otype} expiry={expiry}. Sample available: {sample}", "error")
     return None, None
@@ -642,11 +601,10 @@ def get_option_symbol(price, signal, strike_override=None):
         sym = f"NIFTY{get_nearest_expiry()}{strike_override}{otype}"
         if sym not in nfo_symbols:
             add_log(f"Strike {strike_override} not in symbol master: {sym}", "error")
-            return sym   # return anyway, will fail at LTP fetch with clear error
+            return sym   
         return sym
     sym, strike = find_closest_symbol(price, otype)
     if sym is None:
-        # last resort — return the raw ATM symbol so error is visible
         strike = round(price / 50) * 50
         return f"NIFTY{get_nearest_expiry()}{strike}{otype}"
     return sym
@@ -751,8 +709,6 @@ def is_market_hours():
     return mo_start <= now <= mo_end
 
 def is_trading_session():
-    """Returns True only during the two defined session windows where
-    the bot is allowed to OPEN new positions."""
     now = datetime.now(IST).replace(tzinfo=None)
     if now.weekday() >= 5:
         return False
@@ -765,22 +721,17 @@ def is_trading_session():
     return (s1s <= t <= s1e) or (s2s <= t <= s2e)
 
 def daily_reset_if_needed():
-    """Reset per-day counters once per calendar day at market open."""
     today = datetime.now(IST).date()
     if last_reset_date[0] == today:
         return
     last_reset_date[0] = today
-    # Reset intra-day counters only — preserve balance/pnl across restarts
     state["tick_count"]  = 0
     state["micro_count"] = 0
     tick_buffer.clear()
     micro_buffer.clear()
-    hist_buffer.clear()
     add_log(f"Daily reset for {today} ✓", "info")
 
 def market_status_thread():
-    """Background thread: keeps market_open, signal, and last_update
-    accurate every second — independent of tick arrivals."""
     while True:
         try:
             now = datetime.now(IST).replace(tzinfo=None)
@@ -799,8 +750,6 @@ def market_status_thread():
 
 def bot_loop():
     add_log("NSEAlgo v4 — WebSocket starting...", "info")
-
-    # start the market status heartbeat immediately
     threading.Thread(target=market_status_thread, daemon=True).start()
 
     obj = connect_angel()
@@ -814,12 +763,10 @@ def bot_loop():
             if not is_market_hours():
                 state["ws_connected"] = False
                 add_log("Outside market hours — waiting for 9:15 AM IST", "info")
-                # sleep until market open (check every 30 s)
                 while not is_market_hours():
                     time.sleep(30)
                 add_log("Market opening — reconnecting Angel One session...", "info")
 
-            # Re-login each morning (JWT expires)
             obj = connect_angel()
             if obj is None:
                 time.sleep(30)
@@ -837,13 +784,12 @@ def bot_loop():
                 CLIENT_CODE.strip(),
                 _feed_token[0]
             )
-            _ws_ref[0] = ws          # must be set BEFORE connect so on_open can call subscribe
+            _ws_ref[0] = ws          
             ws.on_open  = on_open
             ws.on_data  = on_data
             ws.on_error = on_error
             ws.on_close = on_close
 
-            # Reset last_tick_time so the 60s zombie check starts fresh
             state["last_tick_time"] = time.time()
 
             def run_ws():
@@ -856,20 +802,16 @@ def bot_loop():
             ws_thread = threading.Thread(target=run_ws, daemon=True)
             ws_thread.start()
 
-            # Give WS time to connect and first tick to arrive before zombie check begins
             time.sleep(20)
 
-            # Keep-alive: wait while market is open
             while is_market_hours():
                 time.sleep(1)
                 secs_since_tick = time.time() - state["last_tick_time"]
-                # Dead if: WS flag dropped, OR connected but no tick for 60s (zombie)
                 ws_dead = (not state["ws_connected"]) or (secs_since_tick > 60)
                 if ws_dead:
                     add_log(f"WS zombie detected ({secs_since_tick:.0f}s since last tick) — reconnecting...", "error")
                     break
 
-            # Market closed or WS died
             try:
                 ws.close_connection()
             except Exception:
@@ -884,9 +826,6 @@ def bot_loop():
             add_log(f"Bot loop error: {e}", "error")
             time.sleep(30)
 
-# ═══════════════════════════════════════
-#   API — STATE
-# ═══════════════════════════════════════
 # ═══════════════════════════════════════
 #   API — STATE
 # ═══════════════════════════════════════
@@ -914,14 +853,9 @@ def api_state():
         "ema9"         : state.get("ema9", 0.0),
         "ema21"        : state.get("ema21", 0.0),
         "adx"          : state.get("adx_value", 0.0),
-        
-        # New CPR & Power S&R Data
-        # New CPR & Power S&R Data
         "cpr_p"        : state.get("cpr_p", 0.0),
         "cpr_tc"       : state.get("cpr_tc", 0.0),
         "cpr_bc"       : state.get("cpr_bc", 0.0),
-        
-        # Adding R1-R4 and S1-S4
         "r4"           : state.get("r4", 0.0),
         "r3"           : state.get("r3", 0.0),
         "r2"           : state.get("r2", 0.0),
@@ -934,11 +868,9 @@ def api_state():
         "pdl"          : state.get("pdl", 0.0),
         "support"      : state.get("support", 0.0),
         "resistance"   : state.get("resistance", 0.0),
-        
         "ema_signal"   : state.get("ema_signal", "—"),
         "cpr_signal"   : state.get("cpr_signal", "—"),
         "sr_signal"    : state.get("sr_signal", "—"),
-        
         "buy_votes"    : state.get("buy_votes", 0),
         "sell_votes"   : state.get("sell_votes", 0),
         "in_session"   : state.get("in_session", False),
@@ -952,9 +884,7 @@ def api_state():
         "bot_paused"   : state.get("bot_paused", False),
         "trade_source" : state.get("trade_source", "auto"),
     })
-# ═══════════════════════════════════════
-#   API — BOT TOGGLE
-# ═══════════════════════════════════════
+
 @app.route("/api/bot/toggle", methods=["POST"])
 def api_bot_toggle():
     state["bot_paused"] = not state["bot_paused"]
@@ -962,10 +892,6 @@ def api_bot_toggle():
     add_log(f"Bot {status} by user", "info")
     return jsonify({"ok": True, "bot_paused": state["bot_paused"], "message": f"Bot {status}"})
 
-# ═══════════════════════════════════════
-# ═══════════════════════════════════════
-#   API — MANUAL BUY CE
-# ═══════════════════════════════════════
 @app.route("/api/manual/buy_ce", methods=["POST"])
 def api_manual_buy_ce():
     obj = _obj[0]
@@ -992,9 +918,6 @@ def api_manual_buy_ce():
                          strike_override=strike, lots_override=lots)
     return jsonify({"ok": ok, "message": msg})
 
-# ═══════════════════════════════════════
-#   API — MANUAL BUY PE
-# ═══════════════════════════════════════
 @app.route("/api/manual/buy_pe", methods=["POST"])
 def api_manual_buy_pe():
     obj = _obj[0]
@@ -1021,9 +944,6 @@ def api_manual_buy_pe():
                          strike_override=strike, lots_override=lots)
     return jsonify({"ok": ok, "message": msg})
 
-# ═══════════════════════════════════════
-#   API — MANUAL CLOSE
-# ═══════════════════════════════════════
 @app.route("/api/manual/close", methods=["POST"])
 def api_manual_close():
     obj = _obj[0]
@@ -1357,19 +1277,16 @@ async function tick(){
     document.getElementById('li').innerHTML = d.connected ? '<span class="live"></span>Live' : 'Connecting...';
     document.getElementById('upd').textContent = 'Updated ' + d.last_update;
 
-    // WS badge
     const wsEl = document.getElementById('ws');
     wsEl.className = d.ws_connected ? 'pill pill-g' : 'pill pill-r';
     wsEl.textContent = d.ws_connected ? 'WS Live' : 'WS Off';
 
-    // session badge
     const sb2 = document.getElementById('sess');
     sb2.style.display = 'inline-block';
     if(d.in_session){ sb2.className='pill pill-g'; sb2.textContent='✓ Session'; }
     else if(d.market_open){ sb2.className='pill pill-y'; sb2.textContent='Outside Session'; }
     else { sb2.className='pill pill-r'; sb2.textContent='Market Closed'; }
 
-    // bot toggle button
     const btn = document.getElementById('bot-toggle');
     if(d.bot_paused){
       btn.className = 'btn-toggle-resume';
@@ -1379,7 +1296,6 @@ async function tick(){
       btn.textContent = '⏸ Pause Bot';
     }
 
-    // price + indicators
     document.getElementById('np').textContent   = '₹' + fi(d.nifty_price);
     document.getElementById('e9').textContent   = d.ema9  || '—';
     document.getElementById('e21').textContent  = d.ema21 || '—';
@@ -1387,7 +1303,6 @@ async function tick(){
     document.getElementById('tc').textContent   = d.tick_count  || 0;
     document.getElementById('mc').textContent   = d.micro_count || 0;
 
-    // signal badge
     const s = d.signal;
     let sc = 'shold', ic = '—';
     if(s==='BUY'){sc='sbuy';ic='▲';}
@@ -1399,7 +1314,6 @@ async function tick(){
     document.getElementById('bv').textContent = '🟢 BUY ' + d.buy_votes + '/3';
     document.getElementById('sv').textContent = '🔴 SELL ' + d.sell_votes + '/3';
 
-    // stats
     const pe = document.getElementById('pnl');
     pe.textContent = (d.total_pnl>=0?'+':'')+'₹'+fi(Math.abs(d.total_pnl));
     pe.className = 'big '+(d.total_pnl>=0?'g':'r');
@@ -1412,14 +1326,6 @@ async function tick(){
     document.getElementById('wi').textContent   = d.wins;
     document.getElementById('lo').textContent   = d.losses;
 
-    // strategy signals
-    document.getElementById('ema-s').textContent  = d.ema_signal  || '—';
-    document.getElementById('cpr-s').textContent  = d.cpr_signal || '—';
-    document.getElementById('sr-s').textContent   = d.sr_signal   || '—';
-    document.getElementById('sup').textContent    = d.support    ? '₹'+fi(d.support)    : '—';
-    document.getElementById('res').textContent    = d.resistance ? '₹'+fi(d.resistance) : '—';
-    document.getElementById('cpr-base').textContent = d.cpr_p    ? '₹'+fi(d.cpr_p)      : '—';
-    // strategy signals
     document.getElementById('ema-s').textContent  = d.ema_signal  || '—';
     document.getElementById('cpr-s').textContent  = d.cpr_signal || '—';
     document.getElementById('sr-s').textContent   = d.sr_signal   || '—';
@@ -1427,7 +1333,6 @@ async function tick(){
     document.getElementById('res').textContent    = d.resistance ? '₹'+fi(d.resistance) : '—';
     document.getElementById('cpr-base').textContent = d.cpr_p    ? '₹'+fi(d.cpr_p)      : '—';
 
-    // Update Daily Levels UI (NEW 9:15 AM LEVELS)
     document.getElementById('val-r4').textContent = d.r4 ? '₹'+fi(d.r4) : '—';
     document.getElementById('val-r3').textContent = d.r3 ? '₹'+fi(d.r3) : '—';
     document.getElementById('val-r2').textContent = d.r2 ? '₹'+fi(d.r2) : '—';
@@ -1442,12 +1347,10 @@ async function tick(){
     document.getElementById('val-s3').textContent = d.s3 ? '₹'+fi(d.s3) : '—';
     document.getElementById('val-s4').textContent = d.s4 ? '₹'+fi(d.s4) : '—';
 
-    // manual button state
     document.getElementById('btn-ce').disabled        = hasPos;
     document.getElementById('btn-pe').disabled        = hasPos;
     document.getElementById('btn-close-pos').disabled = !hasPos;
 
-    // hint
     const hint = document.getElementById('m-hint');
     if(hasPos){
       hint.innerHTML = '<span style="color:#ea580c;font-weight:700">⚠ A position is open. Close it before placing a new trade.</span>';
@@ -1457,7 +1360,6 @@ async function tick(){
       hint.textContent = 'Leave strike blank to use ATM (nearest ₹50 strike). Leave lots blank to use 80% of available capital.';
     }
 
-    // open position card
     if(d.position){
       const p = d.position;
       const isManual = p.source === 'manual';
@@ -1492,7 +1394,6 @@ async function tick(){
       document.getElementById('npc').style.display = 'block';
     }
 
-    // trades table
     if(d.trades.length > 0){
       document.getElementById('te').style.display = 'none';
       document.getElementById('tt').style.display = 'table';
@@ -1507,7 +1408,6 @@ async function tick(){
         </tr>`).join('');
     }
 
-    // activity log
     document.getElementById('lc').innerHTML = d.log.map(l => `
       <div class="lr l${l.level}">
         <span style="color:#64748b;font-weight:600">${l.time} </span><span style="font-weight:600;color:#334155">${l.msg}</span>
@@ -1524,6 +1424,7 @@ setInterval(tick, 3000);
 @app.route("/")
 def home():
     return render_template_string(HTML)
+
 def ltp_monitor():
     while True:
         try:
@@ -1535,13 +1436,11 @@ def ltp_monitor():
                     state["unrealized_pnl"] = round(
                         (ltp - pos["entry_price"]) * pos["qty"], 2)
                     
-                    # Trailing SL & TP Logic
                     if ltp > pos.get("highest_ltp", pos["entry_price"]):
                         pos["highest_ltp"] = ltp
                         pos["sl_price"]  = round(ltp - STOP_LOSS_PTS, 2)
                         pos["tgt_price"] = round(ltp + TARGET_PTS, 2)
 
-                    # check SL and target every second
                     if ltp <= pos["sl_price"]:
                         result = "profit" if ltp > pos["entry_price"] else "loss"
                         add_log(f"Trailing SL hit! ₹{ltp:.2f}", result)
@@ -1556,18 +1455,11 @@ def ltp_monitor():
             pass
         time.sleep(1)
 
- 
-
- 
-
-# REMOVE the two lines that were sitting outside here
 
 if __name__ == "__main__":
-    # 1. Start background threads inside the main block
     threading.Thread(target=ltp_monitor, daemon=True).start()
     threading.Thread(target=bot_loop, daemon=True).start()
     
-    # 2. Get port and start Flask
     port = int(os.environ.get("PORT", 5000))
     print(f"DEBUG: Starting Flask on port {port}")
-    app.run(host="0.0.0.0", port=port, use_reloader=False) # use_reloader=False prevents double-threading
+    app.run(host="0.0.0.0", port=port, use_reloader=False)

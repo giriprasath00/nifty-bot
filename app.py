@@ -1,4 +1,4 @@
- from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, jsonify, render_template_string, request
 from SmartApi import SmartConnect
 from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 import pyotp, pandas as pd, threading, time, os, requests, json

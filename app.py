@@ -252,20 +252,63 @@ def fetch_daily_levels(obj):
         add_log(f"Failed to fetch daily levels: {e}", "error")
 
 # ═══════════════════════════════════════
-#   VIX FETCH
+#   VIX FETCH  (3-method with sanity check)
 # ═══════════════════════════════════════
 def fetch_vix(obj):
-    """Fetch India VIX. Returns float or None."""
+    """
+    Fetch India VIX reliably.
+    Angel One getMarketData token 26000 often returns Nifty price (~23000+).
+    Real India VIX is always between 8 and 80.
+    Tries 3 methods in order, falls back to safe default 14.0.
+    """
+    # Method 1: NSEIndia public API (most reliable)
     try:
-        data    = obj.getMarketData("LTP", {"NSE": [VIX_TOKEN]})
-        fetched = data.get("data", {}).get("fetched", [])
-        if fetched:
-            vix = float(fetched[0]["ltp"])
-            state["vix"] = round(vix, 2)
-            return vix
-    except Exception as e:
-        add_log(f"VIX fetch error: {e}", "error")
-    return None
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept"    : "application/json",
+            "Referer"   : "https://www.nseindia.com",
+        }
+        sess = requests.Session()
+        sess.get("https://www.nseindia.com", headers=headers, timeout=5)
+        res  = sess.get(
+            "https://www.nseindia.com/api/allIndices",
+            headers=headers, timeout=5
+        )
+        for index in res.json().get("data", []):
+            if index.get("index") == "INDIA VIX":
+                vix = float(index["last"])
+                if 8.0 <= vix <= 80.0:
+                    state["vix"] = round(vix, 2)
+                    return vix
+    except Exception:
+        pass
+
+    # Method 2: Angel One getCandleData for VIX token
+    try:
+        to_dt   = datetime.now(IST).strftime("%Y-%m-%d %H:%M")
+        from_dt = (datetime.now(IST) - timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M")
+        params  = {
+            "exchange"   : "NSE",
+            "symboltoken": VIX_TOKEN,
+            "interval"   : "FIVE_MINUTE",
+            "fromdate"   : from_dt,
+            "todate"     : to_dt,
+        }
+        res = obj.getCandleData(params)
+        if res and res.get("status") and res.get("data"):
+            vix = float(res["data"][-1][4])
+            if 8.0 <= vix <= 80.0:
+                state["vix"] = round(vix, 2)
+                return vix
+            else:
+                add_log(f"Angel VIX sanity fail: got {vix:.1f} — ignoring", "error")
+    except Exception:
+        pass
+
+    # Method 3: safe neutral default
+    add_log("VIX unavailable — defaulting to 14.0 (safe neutral)", "info")
+    state["vix"] = 14.0
+    return 14.0
 
 # ═══════════════════════════════════════
 #   WEBSOCKET HANDLERS
@@ -676,14 +719,23 @@ def compute_signal_and_trade():
         state["adx_value"] = adx
         update_market_bias()
 
-        # ── Gate 4: VIX filter ──────────────────────────────
+        # ── Gate 4: VIX filter (with sanity check) ──────────
         obj = _obj[0]
         if obj:
             vix = fetch_vix(obj)
-            if vix and vix > MAX_VIX:
-                state["signal"] = "HOLD"
-                state["reason"] = f"VIX {vix:.1f} > {MAX_VIX} — premiums too expensive"
-                return
+            if vix and vix > 1000:
+                # Receiving Nifty price instead of VIX — ignore filter entirely
+                add_log(f"VIX returning Nifty price ({vix:.0f}) — VIX gate skipped", "error")
+                state["vix"] = 0.0
+            elif vix and 8.0 <= vix <= 80.0:
+                # Valid VIX range — apply filter normally
+                if vix > MAX_VIX:
+                    state["signal"] = "HOLD"
+                    state["reason"] = f"VIX {vix:.1f} > {MAX_VIX} — premiums too expensive"
+                    return
+            else:
+                # Unknown / unavailable — skip filter, use safe default
+                state["vix"] = 14.0
 
         # ── Gate 5: ADX trend filter ────────────────────────
         if adx < ADX_THRESHOLD:

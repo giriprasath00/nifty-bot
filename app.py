@@ -5,7 +5,7 @@ import pyotp, pandas as pd, threading, time, os, requests, json
 from datetime import datetime, timedelta, date
 from collections import deque
 import numpy as np
-import pytz
+import pytz     
 
 IST = pytz.timezone("Asia/Kolkata")
 app = Flask(__name__)
@@ -724,73 +724,82 @@ def compute_signal_and_trade():
         if obj:
             vix = fetch_vix(obj)
             if vix and vix > 1000:
-                # Receiving Nifty price instead of VIX — ignore filter entirely
                 add_log(f"VIX returning Nifty price ({vix:.0f}) — VIX gate skipped", "error")
                 state["vix"] = 0.0
             elif vix and 8.0 <= vix <= 80.0:
-                # Valid VIX range — apply filter normally
                 if vix > MAX_VIX:
                     state["signal"] = "HOLD"
                     state["reason"] = f"VIX {vix:.1f} > {MAX_VIX} — premiums too expensive"
                     return
             else:
-                # Unknown / unavailable — skip filter, use safe default
                 state["vix"] = 14.0
 
-        # ── Gate 5: ADX trend filter ────────────────────────
-        if adx < ADX_THRESHOLD:
+        # ── Gate 5: ADX trend filter (RELAXED to 18) ────────
+        # FIX: ADX 22 was blocking most of the day — Nifty ADX
+        # on 5-min candles rarely exceeds 22 in normal trending sessions.
+        # Lowered to 18 so trending moves are captured.
+        if adx < 18:
             state["signal"] = "HOLD"
-            state["reason"] = f"Choppy market — ADX {adx:.1f} < {ADX_THRESHOLD}"
+            state["reason"] = f"Choppy — ADX {adx:.1f} < 18"
             state["buy_votes"]  = 0
             state["sell_votes"] = 0
             return
 
-        # ── RSI extremes filter ─────────────────────────────
-        if rsi > 78:
+        # ── RSI extremes filter (RELAXED: 80/20) ────────────
+        # FIX: 78/22 was too tight — RSI 75 is not yet overbought
+        if rsi > 80:
             state["signal"] = "HOLD"
-            state["reason"] = f"RSI {rsi:.1f} overbought — avoid buying CE"
+            state["reason"] = f"RSI {rsi:.1f} overbought — skip CE"
             return
-        if rsi < 22:
+        if rsi < 20:
             state["signal"] = "HOLD"
-            state["reason"] = f"RSI {rsi:.1f} oversold — avoid buying PE"
+            state["reason"] = f"RSI {rsi:.1f} oversold — skip PE"
             return
 
-        # ── Voting: 4 indicators, need 3/4 ─────────────────
+        # ── Voting: need 2/4 instead of 3/4 ─────────────────
+        # FIX: 3/4 consensus was too strict — often 2 agree strongly
+        # while CPR/SR are neutral (price mid-range). 2/4 is more realistic.
         indicators = [ema_s, supertrend_s, cpr_s, sr_s]
-        # ORB gets bonus weight when active and confirmed
         if orb_s != "NEUTRAL" and state["orb_set"]:
-            indicators.append(orb_s)  # 5 votes available when ORB is active
+            indicators.append(orb_s)
 
         buy_votes  = sum(1 for s in indicators if s == "BUY")
         sell_votes = sum(1 for s in indicators if s == "SELL")
         total_v    = len(indicators)
-        needed     = max(3, int(total_v * 0.6))  # 60% consensus
 
+        # Need at least 2 votes AND more than opposing votes
+        needed = 2
         state["buy_votes"]  = buy_votes
         state["sell_votes"] = sell_votes
 
-        if buy_votes >= needed:
+        if buy_votes >= needed and buy_votes > sell_votes:
             raw_signal = "BUY"
-        elif sell_votes >= needed:
+        elif sell_votes >= needed and sell_votes > buy_votes:
             raw_signal = "SELL"
         else:
             raw_signal = "HOLD"
 
-        # ── Signal history confirmation (anti-whipsaw) ──────
+        # ── Signal history: 1 confirmation enough ───────────
+        # FIX: requiring 2/3 history meant 6-9 min delay before entry.
+        # Now 1 consistent signal is enough to act.
         update_signal_history(raw_signal)
-        confirmed = get_confirmed_signal()
+        # Use raw_signal directly — history used for logging only
+        confirmed = raw_signal
 
-        # Bias alignment: only trade with market bias
-        if confirmed == "BUY"  and state["market_bias"] == "BEARISH":
+        # ── Bias alignment (RELAXED — only block on NEUTRAL bias) ──
+        # FIX: blocking BUY when bias=BEARISH was too aggressive.
+        # Market bias flips slowly — only block if bias is strongly opposite
+        # AND the signal is weak (exactly 2 votes).
+        if confirmed == "BUY" and state["market_bias"] == "BEARISH" and buy_votes == 2:
             confirmed = "HOLD"
-            state["reason"] = "BUY signal rejected — market bias is BEARISH"
-        if confirmed == "SELL" and state["market_bias"] == "BULLISH":
+            state["reason"] = f"Weak BUY ({buy_votes} votes) rejected — bias BEARISH"
+        elif confirmed == "SELL" and state["market_bias"] == "BULLISH" and sell_votes == 2:
             confirmed = "HOLD"
-            state["reason"] = "SELL signal rejected — market bias is BULLISH"
+            state["reason"] = f"Weak SELL ({sell_votes} votes) rejected — bias BULLISH"
 
-        reason = (f"{buy_votes if confirmed=='BUY' else sell_votes}/{total_v} agree "
-                  f"{'BUY' if confirmed=='BUY' else 'SELL' if confirmed=='SELL' else 'mixed'} | "
-                  f"ADX {adx:.1f} | RSI {rsi:.1f} | Bias {state['market_bias']}")
+        reason = (f"Votes: BUY {buy_votes} SELL {sell_votes}/{total_v} | "
+                  f"ADX {adx:.1f} | RSI {rsi:.1f} | "
+                  f"Bias {state['market_bias']} | VIX {state['vix']:.1f}")
 
         state["signal"] = confirmed
         state["reason"] = reason

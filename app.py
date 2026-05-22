@@ -5,7 +5,7 @@ import pyotp, pandas as pd, threading, time, os, requests, json
 from datetime import datetime, timedelta, date
 from collections import deque
 import numpy as np
-import pytz     
+import pytz
 
 IST = pytz.timezone("Asia/Kolkata")
 app = Flask(__name__)
@@ -22,24 +22,24 @@ TOTP_TOKEN  = os.environ.get("TOTP_TOKEN",  "")
 #   SETTINGS
 # ═══════════════════════════════════════
 CAPITAL          = 2000000      # 20 Lakhs
-LOT_SIZE         = 75           # Updated Nifty lot size (check with broker)
-CAPITAL_USE_PCT  = 0.10         # FIX: was 0.80 — risking 80% per trade is reckless; use 10%
-SL_PCT           = 0.30         # FIX: 30% of premium (was fixed ₹10 — too tight)
-TARGET_PCT       = 0.55         # FIX: 55% of premium (was fixed ₹25)
-TRAIL_ACTIVATE   = 0.25         # Start trailing after +25% premium gain
-TRAIL_LOCK_PCT   = 0.10         # Lock in at least 10% profit once trailing starts
+LOT_SIZE         = 75           # Nifty lot size
+CAPITAL_USE_PCT  = 0.10         # 10% of capital per trade
+SL_PCT           = 0.30         # 30% of premium as stop loss
+TARGET_PCT       = 0.55         # 55% of premium as target
+TRAIL_ACTIVATE   = 0.20         # Start trailing after +20% premium gain
+TRAIL_LOCK_PCT   = 0.10         # Lock in 10% profit once trailing starts
 MAX_DAILY_LOSS_PCT = 0.02       # 2% of capital = ₹40,000 max daily loss
-MAX_TRADES_PER_DAY = 5          # Hard cap — quality over quantity
+MAX_TRADES_PER_DAY = 6          # Allow 6 trades per day
 MAX_CONSEC_LOSSES  = 3          # Pause after 3 consecutive losses
-CPR_BUFFER       = 15           # Points above/below CPR before it votes
+CPR_BUFFER       = 10           # RELAXED: was 15 — tighter CPR buffer
 ZONE_TOLERANCE   = 12.0         # S&R zone width (points)
-MIN_CANDLES_SR   = 12           # Min 5-min candles before S&R votes (1 hour)
-MIN_CANDLES_EMA  = 21           # Min candles for EMA21 to be valid
-ADX_THRESHOLD    = 22           # Trend strength minimum (was 25 — slightly relaxed)
+MIN_CANDLES_SR   = 8            # RELAXED: was 12 — S&R votes after 40 min
+MIN_CANDLES_EMA  = 21           # Min candles for EMA21
+ADX_THRESHOLD    = 18           # FIXED: was 22 in settings but 18 in code
 MAX_VIX          = 18.0         # Skip buying if VIX above this
-MIN_PREMIUM      = 40           # Minimum option premium to trade (avoid illiquid)
-SIGNAL_INTERVAL  = 180          # Seconds between signal computations
-MICRO_INTERVAL   = 15           # Seconds between micro-buffer updates
+MIN_PREMIUM      = 30           # RELAXED: was 40 — allow slightly cheaper options
+SIGNAL_INTERVAL  = 60           # SPEED FIX: was 180s (3 min) → now 60s (1 min)
+MICRO_INTERVAL   = 10           # SPEED FIX: was 15s → now 10s
 
 NIFTY_TOKEN      = "99926000"
 VIX_TOKEN        = "26000"
@@ -124,7 +124,8 @@ state = {
     "orb_set"          : False,
     "orb_signal"       : "—",
     "market_bias"      : "NEUTRAL",  # NEW: overall bias from structure
-    "signal_history"   : [],         # NEW: last 5 signals for confirmation
+    "signal_history"   : [],         # last 5 signals for confirmation
+    "last_candle_time" : "",          # tracks candle close for instant signal fire
     "pause_reason"     : "",
 }
 
@@ -370,7 +371,17 @@ def on_data(wsapp, message):
             compute_micro_average()
             last_micro_time[0] = time.time()
 
-        if time.time() - last_signal_time[0] >= SIGNAL_INTERVAL:
+        # SPEED FIX: check signal every 60s OR on every new 5-min candle close
+        candle_just_closed = (
+            current_5m_candle is not None and
+            state.get("last_candle_time") != current_5m_candle["time"] and
+            len(candle_5m_buffer) >= 5
+        )
+        if candle_just_closed:
+            state["last_candle_time"] = current_5m_candle["time"]
+            compute_signal_and_trade()
+            last_signal_time[0] = time.time()
+        elif time.time() - last_signal_time[0] >= SIGNAL_INTERVAL:
             compute_signal_and_trade()
             last_signal_time[0] = time.time()
 
